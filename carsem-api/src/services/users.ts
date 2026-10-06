@@ -26,7 +26,7 @@ export interface UserRow {
 export interface AgentRow { id: string; user_id: string; name: string; address: string; did: string; masumi_agent_id: string | null; created_at: number }
 export interface ConsentRow { user_id: string; status: "active" | "revoked"; allow_borrowing: number; allow_sale_while_open: number; sources_json: string; granted_at: number; revoked_at: number | null }
 
-export const SYNC_SOURCES = ["assistant", "export", "hermes", "claude_code", "tool_queries"] as const;
+export const SYNC_SOURCES = ["assistant", "export", "hermes", "claude_code", "tool_queries", "demo"] as const;
 const keyHash = (key: string) => createHash("sha256").update(`carsem-user-key:${key}`).digest("hex");
 
 export class Users {

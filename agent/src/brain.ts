@@ -90,17 +90,23 @@ async function scriptedBrain(message: string, agent: UserAgent, emit: (e: AgentE
   if (failed(bought)) return `Purchase failed: ${bought.error}`;
   let loanId: string | undefined;
   if (bought.status === "insufficient_funds") {
-    say(`"${best.title}" costs ${bought.price_usdm} USDM and the agent holds ${bought.balance_usdm}. Collateral borrowing ${bought.price_usdm} USDM against your redacted chats.`);
-    let loan = await agent.borrow({ amount_usdm: bought.price_usdm });
-    if (!failed(loan) && loan.status === "sync_required") {
-      say("Syncing what I know from this conversation first (redacted by CARSEM).");
-      await agent.syncContext({ items: [message] });
-      loan = await agent.borrow({ amount_usdm: bought.price_usdm });
+    say(`"${best.title}" costs ${bought.price_usdm} USDM, but your agent only holds ${bought.balance_usdm}. I can borrow ${bought.price_usdm} USDM from CARSEM if you pledge some of your past messages as collateral.`);
+    const request = await agent.borrow({ amount_usdm: bought.price_usdm, purpose: best.title });
+    if (failed(request)) return `I could not start borrowing: ${request.error}`;
+    let loan;
+    if (request.status === "selection_required") {
+      if (request.your_messages.length < request.minimum_to_pledge) {
+        await agent.notifyUser({ message: `To borrow you need at least ${request.minimum_to_pledge} past messages to choose from, and you have ${request.your_messages.length}. Add some (import your ChatGPT or Claude history, or the sample chats) and ask again.` });
+        return "Stopped: not enough past messages to pledge yet.";
+      }
+      say(`Choose which of your past messages to pledge (at least ${request.minimum_to_pledge}). I'll wait.`);
+      loan = await agent.borrowStatus({ request_id: request.request_id, wait_seconds: 600 });
+    } else {
+      loan = request;
     }
     if (failed(loan) || loan.status !== "borrowed") {
-      const reason = failed(loan) ? loan.error : loan.message;
-      await agent.notifyUser({ message: `I could not borrow: ${reason}. Sync more of your context (npm run sync) and ask again.` });
-      return `Stopped: borrowing failed (${reason}).`;
+      const why = failed(loan) ? loan.error : loan.status === "declined" ? "you declined" : loan.status === "pending" ? "no messages were chosen in time" : `the request is ${loan.status}`;
+      return `Stopped: no loan (${why}). Nothing was bought.`;
     }
     loanId = loan.loan_id;
     say(`Borrowed ${loan.amount_usdm} USDM (fee ${loan.fee_usdm}, due ${loan.total_due_usdm} by ${clock(loan.deadline)}); ${loan.collateral}. Buying now.`);

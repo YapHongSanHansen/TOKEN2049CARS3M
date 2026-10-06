@@ -1,7 +1,8 @@
 /**
  * CARSEM Lending — our contribution (Masumi has no lending primitive).
  *
- *   borrow   gate (Masumi DID + KYC credential + consent) → sync snapshot sealed as collateral
+ *   request  the agent hits a paywall it cannot afford and asks to borrow
+ *   borrow   the user picks which past messages to pledge → only those are sealed as collateral
  *            → treasury pays the agent on chain (metadata carries loan id + collateral_ref)
  *   repay    an x402 payment of the outstanding amount → collateral released
  *   default  deadline passes with money owed → the redacted bundle is published on CARSEM
@@ -21,6 +22,8 @@ export interface LoanRow {
   disburse_tx: string | null; created_at: number; closed_at: number | null;
 }
 
+export interface LoanRequestRow { id: string; user_id: string; amount_units: string; purpose: string; status: "pending" | "approved" | "declined" | "expired"; loan_id: string | null; created_at: number; decided_at: number | null }
+
 export class Lending {
   constructor(
     private readonly db: Db, private readonly config: Config, private readonly chain: Chain,
@@ -32,8 +35,8 @@ export class Lending {
   terms() {
     return {
       asset: this.config.usdmAsset, maxAmount: fromUnits(this.config.loanMax), feeBps: Number(this.config.loanFeeBps),
-      deadlineSeconds: this.config.loanDeadlineMs / 1000, minSyncedItems: this.config.minSyncItems,
-      collateral: "rights to the user's redacted chats, snapshotted when the loan starts",
+      deadlineSeconds: this.config.loanDeadlineMs / 1000, minMessagesToPledge: this.config.minPledgeItems,
+      collateral: "rights to the past messages the user chooses to pledge, redacted",
       onDefault: `the redacted chats are published on CARSEM; any user can access them for ${fromUnits(this.config.publicAccessPrice)} USDM, and they keep selling`,
     };
   }
@@ -84,21 +87,80 @@ export class Lending {
       loanId, kind, amount?.toString() ?? null, tx ?? null, detail ? JSON.stringify(detail) : null, Date.now());
   }
 
-  async borrow(user: UserRow, amount: bigint) {
-    const agent = this.users.requireOnboarded(user);
+  // ---- requests: the agent asks, the user chooses what to pledge ---------------
+
+  request(id: string): LoanRequestRow {
+    const request = this.db.get<LoanRequestRow>("SELECT * FROM loan_requests WHERE id = ?", id);
+    if (!request) throw new HttpError(404, `No loan request ${id}`);
+    return request;
+  }
+
+  requestView(r: LoanRequestRow) {
+    return {
+      id: r.id, status: r.status, amount: fromUnits(r.amount_units), purpose: r.purpose, loanId: r.loan_id,
+      createdAt: new Date(r.created_at).toISOString(), decidedAt: r.decided_at && new Date(r.decided_at).toISOString(),
+      minMessagesToPledge: this.config.minPledgeItems,
+    };
+  }
+
+  /** The agent hits a paywall it can't afford and asks to borrow. A newer request replaces an older pending one. */
+  createRequest(user: UserRow, amount: bigint, purpose: string) {
+    this.users.requireOnboarded(user);
+    this.checkAmount(amount);
+    if (this.db.get("SELECT 1 FROM loans WHERE user_id = ? AND status IN ('disbursing','open')", user.id)) {
+      throw new HttpError(409, "There is already an open loan against your messages. Repay it first.", "loan_open");
+    }
+    const id = newId("req");
+    this.db.transaction(() => {
+      this.db.run("UPDATE loan_requests SET status = 'expired', decided_at = ? WHERE user_id = ? AND status = 'pending'", Date.now(), user.id);
+      this.db.run("INSERT INTO loan_requests (id, user_id, amount_units, purpose, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
+        id, user.id, amount.toString(), purpose.trim().slice(0, 200) || "a paywall the agent could not afford", Date.now());
+    });
+    return this.requestView(this.request(id));
+  }
+
+  pendingRequests(userId: string) {
+    return this.db.all<LoanRequestRow>("SELECT * FROM loan_requests WHERE user_id = ? AND status = 'pending' ORDER BY created_at DESC", userId).map(r => this.requestView(r));
+  }
+
+  declineRequest(user: UserRow, id: string) {
+    const request = this.request(id);
+    if (request.user_id !== user.id) throw new HttpError(403, "Not your request");
+    if (request.status !== "pending") throw new HttpError(409, `Request is ${request.status}`);
+    this.db.run("UPDATE loan_requests SET status = 'declined', decided_at = ? WHERE id = ?", Date.now(), id);
+    return this.requestView(this.request(id));
+  }
+
+  private checkAmount(amount: bigint) {
     if (amount <= 0n) throw new HttpError(400, "amount must be positive");
     if (amount > this.config.loanMax) throw new HttpError(400, `amount exceeds the ${fromUnits(this.config.loanMax)} USDM limit`);
+  }
+
+  /**
+   * Collateral borrowing: the user (directly, or through their AI app) pledges the past
+   * messages they chose. Approving a request uses its amount; approving it twice returns the same loan.
+   */
+  async borrow(user: UserRow, input: { amount?: bigint; messageIds: unknown; requestId?: string }) {
+    const agent = this.users.requireOnboarded(user);
+    const request = input.requestId ? this.request(input.requestId) : undefined;
+    if (request && request.user_id !== user.id) throw new HttpError(403, "Not your request");
+    if (request?.status === "approved" && request.loan_id) return this.view(this.get(request.loan_id));
+    if (request && request.status !== "pending") throw new HttpError(409, `That request is ${request.status}`);
+    const amount = request ? BigInt(request.amount_units) : input.amount;
+    if (amount === undefined) throw new HttpError(400, "amount is required");
+    this.checkAmount(amount);
     const fee = this.fee(amount);
     const loanId = newId("loan");
 
-    // One loan at a time; the collateral is everything synced up to this moment.
+    // One loan at a time; the collateral is exactly the messages the user chose.
     const bundle = this.db.transaction(() => {
       if (this.db.get("SELECT 1 FROM loans WHERE user_id = ? AND status IN ('disbursing','open')", user.id)) {
-        throw new HttpError(409, "There is already an open loan against your data. Repay it first.");
+        throw new HttpError(409, "There is already an open loan against your messages. Repay it first.", "loan_open");
       }
-      const bundle = this.sync.snapshot(user.id);
+      const bundle = this.sync.snapshot(user.id, input.messageIds);
       this.db.run("INSERT INTO loans (id, agent_id, user_id, amount_units, fee_units, status, collateral_ref, bundle_id, created_at) VALUES (?, ?, ?, ?, ?, 'disbursing', ?, ?, ?)",
         loanId, agent.id, user.id, amount.toString(), fee.toString(), bundle.collateral_ref, bundle.id, Date.now());
+      if (request) this.db.run("UPDATE loan_requests SET status = 'approved', loan_id = ?, decided_at = ? WHERE id = ?", loanId, Date.now(), request.id);
       return bundle;
     });
 
@@ -109,6 +171,7 @@ export class Lending {
       this.db.transaction(() => {
         this.db.run("DELETE FROM loans WHERE id = ?", loanId);
         this.db.run("DELETE FROM bundles WHERE id = ?", bundle.id);
+        if (request) this.db.run("UPDATE loan_requests SET status = 'pending', loan_id = NULL, decided_at = NULL WHERE id = ?", request.id);
       });
       throw new HttpError(502, `Disbursement failed: ${(error as Error).message}`);
     }
@@ -116,7 +179,7 @@ export class Lending {
     const deadline = Date.now() + this.config.loanDeadlineMs;
     this.db.transaction(() => {
       this.db.run("UPDATE loans SET status = 'open', deadline = ?, disburse_tx = ? WHERE id = ?", deadline, disbursed.txHash, loanId);
-      this.event(loanId, "collateral_locked", undefined, undefined, { bundleId: bundle.id, items: bundle.item_count, collateralRef: bundle.collateral_ref });
+      this.event(loanId, "collateral_locked", undefined, undefined, { bundleId: bundle.id, items: bundle.item_count, collateralRef: bundle.collateral_ref, purpose: request?.purpose });
       this.event(loanId, "disbursed", amount, disbursed.txHash, { to: agent.address });
     });
     return this.view(this.get(loanId));

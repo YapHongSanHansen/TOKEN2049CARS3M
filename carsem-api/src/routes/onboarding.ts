@@ -15,7 +15,7 @@ export function onboardingRoutes(app: Express, ctx: Context) {
       issuer: issuer.did,
       consentText: "Allow my agent to borrow against my redacted chats. If my agent does not repay by the deadline, my redacted chats are published on CARSEM and sold to any user for a fee.",
       sources: SYNC_SOURCES,
-      minSyncItems: config.minSyncItems,
+      minMessagesToPledge: config.minPledgeItems,
       gateway: config.gatewayPublicUrl,
     });
   });
@@ -54,15 +54,25 @@ export function onboardingRoutes(app: Express, ctx: Context) {
     res.json({ valid: !!row && row.vc_revoked === 0, revoked: row?.vc_revoked === 1, credential });
   });
 
-  // Data sync: redacted on arrival, raw text never stored.
+  // Your past messages: redacted on arrival, raw text never stored. You pledge some of them when your agent borrows.
   app.post("/me/sync", (req, res) => {
     const user = userOf(ctx, req);
     users.requireOnboarded(user);
     res.json(sync.add(user, String(req.body?.source ?? "assistant"), req.body?.items));
   });
-  app.get("/me/sync", (req, res) => {
+  app.get("/me/messages", (req, res) => {
     const user = userOf(ctx, req);
-    res.json({ ...sync.stats(user.id), recent: sync.preview(user.id) });
+    res.json({ ...sync.stats(user.id), messages: sync.messages(user.id) });
+  });
+  app.post("/me/messages/import", (req, res) => {
+    const user = userOf(ctx, req);
+    users.requireOnboarded(user);
+    res.json(sync.import(user, req.body?.format, req.body?.content));
+  });
+  app.post("/me/messages/sample", (req, res) => {
+    const user = userOf(ctx, req);
+    users.requireOnboarded(user);
+    res.json(sync.addSample(user));
   });
   app.get("/me/earnings", (req, res) => { res.json({ earnings: fromUnits(userOf(ctx, req).earnings_units) }); });
 

@@ -85,6 +85,20 @@ async function mcp(gatewayUrl: string, key: string) {
   };
 }
 
+/** What the user does in the app: pick past messages for the agent's pending borrow request. */
+async function approvePending(apiUrl: string, key: string, count = 3) {
+  for (let i = 0; i < 100; i++) {
+    const { body: pending } = await call(`${apiUrl}/me/loan-requests`, { key });
+    if (pending.length) {
+      const { body: history } = await call(`${apiUrl}/me/messages`, { key });
+      const ids = history.messages.slice(0, count).map((m: { id: number }) => m.id);
+      return call(`${apiUrl}/loans`, { key, body: { requestId: pending[0].id, messageIds: ids } });
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error("no pending borrow request");
+}
+
 const CHATS = [
   "Cheapest flight from Kuala Lumpur to Singapore next weekend",
   "My girlfriend's birthday is on 30th Sept, what should I buy? Budget RM 300",
@@ -148,13 +162,21 @@ describe("the drawing's flow over MCP", () => {
     assert.equal(first.status, "insufficient_funds");
     assert.equal(first.balance_usdm, "0.05");
 
-    const needsSync = await tool("borrow", { amount_usdm: "5" });
-    assert.equal(needsSync.status, "sync_required");
-    const synced = await tool("sync_context", { items: CHATS });
-    assert.equal(synced.ready_to_borrow, true);
-    const loan = await tool("borrow", { amount_usdm: "5" });
+    const empty = await tool("borrow", { amount_usdm: "5", purpose: "LONG MIN/ADA" });
+    assert.equal(empty.status, "selection_required");
+    assert.equal(empty.your_messages.length, 0);
+    assert.match(empty.next, /add_messages/);
+    assert.equal((await tool("add_messages", { messages: CHATS })).total_messages, 4);
+    const ask = await tool("borrow", { amount_usdm: "5", purpose: "LONG MIN/ADA" });
+    assert.equal(ask.status, "selection_required");
+    assert.equal(ask.your_messages.length, 4);
+    // The user picks 3 of their 4 messages; the agent never chooses for them.
+    const chosen = ask.your_messages.filter((m: { text: string }) => !m.text.includes("Geylang")).map((m: { id: number }) => m.id);
+    assert.match((await tool("borrow", { amount_usdm: "5", message_ids: chosen.slice(0, 2), request_id: ask.request_id })).error, /at least 3/);
+    const loan = await tool("borrow", { amount_usdm: "5", message_ids: chosen, request_id: ask.request_id });
     assert.equal(loan.status, "borrowed");
-    assert.match(loan.collateral, /4 redacted items locked/);
+    assert.match(loan.collateral, /3 of your past messages pledged/);
+    assert.equal((await tool("borrow_status", { request_id: ask.request_id })).status, "borrowed");
 
     const bought = await tool("buy_data", { listing_id: listingId });
     assert.equal(bought.status, "delivered");
@@ -171,9 +193,11 @@ describe("the drawing's flow over MCP", () => {
     assert.match(delivery.request.buyer, /^did:web:/);
     const [view] = ctx.lending.list({});
     assert.deepEqual(view.events.map(e => e.kind), ["collateral_locked", "disbursed", "repayment", "collateral_released"]);
-    // Synced context was stored redacted: no names, dates or phone numbers.
-    const recent = (await call(`${apiUrl}/me/sync`, { key })).body.recent.map((r: { line: string }) => r.line).join(" ");
-    assert.ok(!recent.includes("30th Sept") && recent.includes("[PERSON]") && recent.includes("[DATE]"));
+    // Messages were stored redacted, and only the chosen ones are locked.
+    const history = (await call(`${apiUrl}/me/messages`, { key })).body.messages;
+    const text = history.map((m: { text: string }) => m.text).join(" ");
+    assert.ok(!text.includes("30th Sept") && text.includes("[PERSON]") && text.includes("[DATE]"));
+    assert.equal(history.find((m: { text: string }) => m.text.includes("Geylang")).state, null);
   });
 
   it("buys live prices (flights, hotels, products) and lets users upload and rate data", async () => {
@@ -200,13 +224,17 @@ describe("curl", () => {
   it("POST /v1/ask runs the whole flow in plain English (scripted brain, no OpenAI key)", async () => {
     const { apiUrl, gatewayUrl, ctx } = await startStack();
     const { key } = await onboard(apiUrl, "Eve", { sync: CHATS });
-    const { status, body } = await call(`${gatewayUrl}/v1/ask?format=json`, { key, body: { message: "Find me trading signals on CARSEM for MIN", forceOutcome: "win" } });
+    const asking = call(`${gatewayUrl}/v1/ask?format=json`, { key, body: { message: "Find me trading signals on CARSEM for MIN", forceOutcome: "win" } });
+    assert.equal((await approvePending(apiUrl, key)).status, 201);
+    const { status, body } = await asking;
     assert.equal(status, 200);
     assert.equal(body.brain, "scripted");
     assert.match(body.summary, /Repaid/);
     assert.equal(ctx.lending.list({})[0].status, "repaid");
     const calls = body.events.filter((e: { type: string }) => e.type === "tool_call").map((e: { tool: string }) => e.tool);
-    assert.deepEqual(calls.slice(0, 5), ["carsem_status", "search_data", "buy_data", "borrow", "buy_data"]);
+    assert.deepEqual(calls.slice(0, 6), ["carsem_status", "search_data", "buy_data", "borrow", "borrow_status", "buy_data"]);
+    // The prompt itself became one of the user's past messages.
+    assert.ok((await call(`${apiUrl}/me/messages`, { key })).body.messages.some((m: { source: string }) => m.source === "tool_queries"));
     // Every tool call is in the user's activity feed (for the dashboard).
     const activity = (await call(`${gatewayUrl}/v1/activity`, { key })).body;
     assert.ok(activity.some((a: { type: string; tool?: string }) => a.type === "tool_call" && a.tool === "borrow"));
@@ -225,7 +253,9 @@ describe("default: published for every user, keeps selling", () => {
   it("loss → top-up request → deadline → published → users and enterprises keep buying", async () => {
     const { apiUrl, gatewayUrl, ctx } = await startStack({ loanDeadlineMs: 1500 });
     const alice = await onboard(apiUrl, "Alice", { sync: CHATS });
-    const { body: ask } = await call(`${gatewayUrl}/v1/ask?format=json`, { key: alice.key, body: { message: "Trade MIN for me", forceOutcome: "loss" } });
+    const asking = call(`${gatewayUrl}/v1/ask?format=json`, { key: alice.key, body: { message: "Trade MIN for me", forceOutcome: "loss" } });
+    await approvePending(apiUrl, alice.key);
+    const { body: ask } = await asking;
     assert.match(ask.notifications[0], /published on CARSEM/);
     let [loan] = ctx.lending.list({});
     assert.equal(loan.status, "open");
@@ -261,7 +291,8 @@ describe("default: published for every user, keeps selling", () => {
   it("a private enterprise sale while the loan is open repays it and pays the owner", async () => {
     const { apiUrl, gatewayUrl, ctx } = await startStack();
     const alice = await onboard(apiUrl, "Alice", { sync: CHATS });
-    await call(`${gatewayUrl}/v1/tools/borrow`, { key: alice.key, body: { amount_usdm: "5" } });
+    const ids = (await call(`${apiUrl}/me/messages`, { key: alice.key })).body.messages.slice(0, 3).map((m: { id: number }) => m.id);
+    assert.equal((await call(`${gatewayUrl}/v1/tools/borrow`, { key: alice.key, body: { amount_usdm: "5", message_ids: ids } })).body.status, "borrowed");
     const [bundle] = (await call(`${apiUrl}/market/bundles`)).body;
     assert.equal(bundle.status, "pledged");
     assert.equal(bundle.publicAccess, null);

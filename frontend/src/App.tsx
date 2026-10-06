@@ -60,7 +60,7 @@ export function App() {
             ) : <span className="mode offline">API offline</span>}
           </div>
         </header>
-        <main>
+        <main className={tab === "agent" && profile?.onboarded ? "flush" : ""}>
           {health.error && !health.data
             ? <div className="offline-note">carsem-api is not reachable. Start everything with <code>npm run demo</code>.</div>
             : <View />}

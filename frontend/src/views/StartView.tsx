@@ -97,8 +97,8 @@ function ConsentStep({ onDone }: { onDone(): Promise<void> }) {
           While a loan is open, enterprises may buy my redacted chats privately; the proceeds repay the loan and the rest goes to me.
         </label>
         <ul className="fine-print">
-          <li>When your agent borrows, what your AI apps have synced is redacted and <strong>locked as collateral</strong>.</li>
-          <li><strong>If the loan is not repaid by the deadline</strong>, your redacted chats are published on CARSEM and any user can access them for {health?.publicAccessPrice ?? "1"} USDM. They keep selling.</li>
+          <li>Your agent <strong>asks you first</strong> every time it needs to borrow, and <strong>you choose which past messages to pledge</strong>. Only those are locked as collateral.</li>
+          <li><strong>If the loan is not repaid by the deadline</strong>, the messages you pledged are published on CARSEM and any user can access them for {health?.publicAccessPrice ?? "1"} USDM. They keep selling.</li>
           <li>Names, dates, contacts, addresses and account numbers are always removed; health topics and credentials are never shared.</li>
           <li>You can revoke consent any time no loan is open.</li>
         </ul>
@@ -155,7 +155,7 @@ function ConnectStep({ profile, keyValue }: { profile: Profile; keyValue: string
           <>
             <p className="muted small">Use a separate Hermes profile named <code>carsem</code>, then add CARSEM to its <code>config.yaml</code>:</p>
             <CopyBlock code={`mcp_servers:\n  carsem:\n    url: ${gateway}/mcp\n    headers:\n      Authorization: "Bearer ${keyValue}"`} />
-            <p className="muted small">Sync what Hermes remembers about you (redacted on your machine first):</p>
+            <p className="muted small">Add what Hermes remembers about you to your past messages (redacted on your machine first):</p>
             <CopyBlock code={`npm run sync -- --source hermes --profile carsem --yes`} />
           </>
         )}

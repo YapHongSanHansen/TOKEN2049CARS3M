@@ -36,15 +36,32 @@ export const TOOLS: ToolDef[] = [
     run: (agent, input) => agent.buyData(input),
   }),
   def({
-    name: "sync_context", title: "Sync user context",
-    description: "Share what you know about the user (from this conversation and your memory) so it can back a CARSEM loan as collateral: short factual lines such as needs, plans and purchase intents. CARSEM redacts names, dates, contacts and sensitive topics on arrival and never stores raw text. The user consented to this during onboarding.",
-    input: z.object({ items: z.array(z.string()).min(1).max(200).describe("One fact per line, e.g. \"Looking for the cheapest flight from Kuala Lumpur to Singapore\"") }),
-    run: (agent, input) => agent.syncContext(input),
+    name: "list_my_messages", title: "List my past messages",
+    description: "The user's past messages on CARSEM (already redacted), with ids. These are what the user can pledge as collateral when borrowing.",
+    input: z.object({}), run: agent => agent.listMyMessages(),
+  }),
+  def({
+    name: "add_messages", title: "Add past messages",
+    description: "Add the user's past messages or what you know about them (from this conversation and your memory) to their CARSEM history, one per line, e.g. their needs, plans and purchase intents. CARSEM redacts names, dates, contacts and sensitive topics on arrival and never stores raw text. The user consented to this during onboarding.",
+    input: z.object({ messages: z.array(z.string()).min(1).max(200) }),
+    run: (agent, input) => agent.addMessages(input),
   }),
   def({
     name: "borrow", title: "Collateral borrowing",
-    description: "Borrow USDM from CARSEM Lending against the user's synced, redacted chats (collateral locked). Borrow the shortfall or the price of what you need, up to 10 USDM. Returns the loan, fee and deadline. If it returns sync_required, call sync_context first.",
-    input: z.object({ amount_usdm: z.string().describe("e.g. \"5\"") }), run: (agent, input) => agent.borrow(input),
+    description: "Borrow USDM from CARSEM Lending against past messages the USER chooses to pledge. Call it first without message_ids: it returns the user's past messages and a request_id. Show the messages to the user, ask which to pledge (at least the minimum), then call borrow again with their message_ids and the request_id. Never choose for the user. Up to 10 USDM.",
+    input: z.object({
+      amount_usdm: z.string().describe("e.g. \"5\""),
+      purpose: z.string().optional().describe("What the money is for, shown to the user, e.g. \"LONG MIN/ADA trading signal\""),
+      message_ids: z.array(z.number().int()).optional().describe("The past messages the user chose to pledge"),
+      request_id: z.string().optional(),
+    }),
+    run: (agent, input) => agent.borrow(input),
+  }),
+  def({
+    name: "borrow_status", title: "Borrow status",
+    description: "Check a borrow request. With wait_seconds, waits while the user chooses their messages in the CARSEM app; returns the loan once they approve.",
+    input: z.object({ request_id: z.string(), wait_seconds: z.number().int().min(0).max(900).optional() }),
+    run: (agent, input) => agent.borrowStatus(input),
   }),
   def({
     name: "trade_signal", title: "Trade a signal",
@@ -75,7 +92,7 @@ export const WORKFLOW = `You are the user's CARSEM agent on Cardano. CARSEM is a
 Workflow:
 1. Call carsem_status first. If the user is not onboarded, give them the onboarding link (Masumi DID verification: KYC + consent) and stop.
 2. search_data for what the user needs, then buy_data.
-3. If buy_data reports insufficient_funds, use collateral borrowing: call borrow for the price (it locks the user's redacted chats as collateral). If borrow returns sync_required, first call sync_context with short factual lines you know about the user from this conversation and your memory, then borrow again. Borrow at most once per task.
+3. If buy_data reports insufficient_funds, use collateral borrowing: call borrow with the price and a short purpose. It returns the user's past messages and a request_id. Show the user those messages (numbered, short) and ask which ones they want to pledge as collateral. When they answer, call borrow again with their message_ids and the request_id. Never pick for them. If you cannot ask the user (a one-shot request), call borrow_status with wait_seconds 600 so they can choose in the CARSEM app. If they have too few messages, offer to add what you know about them with add_messages. Borrow at most once per task.
 4. Buy the data again. For a trading signal, call trade_signal with its delivery_id.
 5. If you borrowed: if the wallet covers the loan, repay_loan. Otherwise tell the user exactly how much to top up and the deadline, and that if the loan is not repaid their redacted chats are published on CARSEM for any user to access for a fee.
 6. Finish with a short summary: what was bought, borrowed, traded and repaid, with transaction hashes.`;

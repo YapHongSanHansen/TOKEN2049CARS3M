@@ -45,7 +45,7 @@ export async function createApp(config: Config, options: { db?: Db } = {}) {
   app.enable("case sensitive routing");
   app.enable("strict routing");
   app.use(cors({ origin: true, allowedHeaders: ["Content-Type", "Authorization", "PAYMENT-SIGNATURE"], exposedHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE"] }));
-  app.use(express.json({ limit: "256kb" }));
+  app.use(express.json({ limit: "25mb" })); // chat exports can be large
   app.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
   // Validate paid requests first, so nobody pays for a 404 or a closed loan.

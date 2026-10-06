@@ -22,15 +22,13 @@ export interface Loan {
   collateral: { ref: string; bundleId: string; version?: number; items?: number; status?: string };
   disburseTx: TxRef | null; createdAt: string; closedAt: string | null; events: LoanEvent[];
 }
-export interface SyncState {
-  items: number; lastSyncedAt: string | null; bySource: Record<string, number>; minimumForBorrowing: number; readyToBorrow: boolean;
-  latestCollateral: { bundleId: string; version: number; status: string; items: number; collateralRef: string; at: string } | null;
-  newSinceLastCollateral: number; recent: Array<{ source: string; line: string; at: string }>;
-}
+export interface PastMessage { id: number; source: string; text: string; intents: string[]; at: string; state: string | null }
+export interface MessagesState { messages: PastMessage[]; minimumToPledge: number; canBorrow: boolean; bySource: Record<string, number>; lastAddedAt: string | null }
+export interface LoanRequest { id: string; status: string; amount: string; purpose: string; loanId: string | null; createdAt: string; minMessagesToPledge: number }
 export interface AgentStatus {
   onboarded: boolean; next?: string;
   wallet?: { address: string; USDM: string; tADA: string };
-  syncedContext?: { items: number; readyToBorrow: boolean; lastSyncedAt: string | null };
+  pastMessages?: { count: number; canBorrow: boolean; minimumToPledge: number };
   openLoan?: { loan_id: string; outstanding_usdm: string; deadline: string; seconds_left: number } | null;
 }
 export interface ActivityEntry { id: number; at: string; type: string; tool?: string; data: any }

@@ -25,8 +25,8 @@ export interface Config {
   loanMax: bigint;
   loanDeadlineMs: number;
   defaultCheckIntervalMs: number;
-  /** Minimum synced items before a loan can lock them as collateral. */
-  minSyncItems: number;
+  /** Minimum number of past messages the user must pledge for a loan. */
+  minPledgeItems: number;
   starter: { ada: bigint; usdm: bigint };
   l1Confirmations: number;
   bundleKey: Buffer;
@@ -85,7 +85,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     loanMax: toUnits(str(env, "LOAN_MAX_USDM", "10")),
     loanDeadlineMs: num(env, "LOAN_DEADLINE_SECONDS", 300) * 1000,
     defaultCheckIntervalMs: num(env, "DEFAULT_CHECK_INTERVAL_MS", 10_000),
-    minSyncItems: num(env, "MIN_SYNC_ITEMS", 3),
+    minPledgeItems: num(env, "MIN_PLEDGE_ITEMS", 3),
     starter: {
       ada: toUnits(str(env, "STARTER_ADA", mode === "preprod" ? "5" : "100")),
       usdm: toUnits(str(env, "STARTER_USDM", "0.05")),

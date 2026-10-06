@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 /** Bump when the schema changes; an older database must be reset (npm run seed -- --reset). */
-export const SCHEMA_VERSION = "2";
+export const SCHEMA_VERSION = "3";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -33,11 +33,11 @@ CREATE TABLE IF NOT EXISTS sync_items (
   redacted TEXT NOT NULL, intents_json TEXT NOT NULL, withheld TEXT, fingerprint TEXT NOT NULL,
   created_at INTEGER NOT NULL, UNIQUE (user_id, fingerprint)
 );
--- A bundle is the snapshot of synced items locked as collateral when a loan starts. Encrypted at rest.
+-- A bundle is the set of past messages the user chose to pledge for one loan. Encrypted at rest.
 CREATE TABLE IF NOT EXISTS bundles (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), version INTEGER NOT NULL, collateral_ref TEXT NOT NULL,
   ciphertext TEXT NOT NULL, iv TEXT NOT NULL, tag TEXT NOT NULL, preview_json TEXT NOT NULL, stats_json TEXT NOT NULL,
-  item_count INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('pledged','released','published')),
+  item_count INTEGER NOT NULL, item_ids_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pledged','released','published')),
   created_at INTEGER NOT NULL
 );
 
@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS loans (
   deadline INTEGER, status TEXT NOT NULL CHECK (status IN ('disbursing','open','repaid','defaulted')),
   collateral_ref TEXT NOT NULL, bundle_id TEXT NOT NULL REFERENCES bundles(id), disburse_tx TEXT,
   created_at INTEGER NOT NULL, closed_at INTEGER
+);
+-- The agent asks to borrow; the user picks which past messages to pledge, then it becomes a loan.
+CREATE TABLE IF NOT EXISTS loan_requests (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), amount_units TEXT NOT NULL, purpose TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','approved','declined','expired')), loan_id TEXT,
+  created_at INTEGER NOT NULL, decided_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS loan_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, loan_id TEXT NOT NULL REFERENCES loans(id), kind TEXT NOT NULL,

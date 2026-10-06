@@ -18,13 +18,33 @@ export function lendingRoutes(app: Express, ctx: Context) {
 
   app.get("/loans/terms", (_req, res) => { res.json(lending.terms()); });
 
-  // Collateral borrowing, as the user's agent. Requires the onboarding gate and synced context.
+  const amountOf = (value: unknown) => {
+    if (value === undefined || value === null || value === "") return undefined;
+    try { return toUnits(String(value)); } catch { throw new HttpError(400, "amount must be a decimal USDM amount, e.g. \"5\""); }
+  };
+
+  // The agent asks to borrow; the user then chooses which past messages to pledge.
+  app.post("/loan-requests", (req, res) => {
+    const amount = amountOf(req.body?.amount);
+    if (amount === undefined) throw new HttpError(400, "amount is required");
+    res.status(201).json(lending.createRequest(userOf(ctx, req), amount, String(req.body?.purpose ?? "")));
+  });
+  app.get("/me/loan-requests", (req, res) => { res.json(lending.pendingRequests(userOf(ctx, req).id)); });
+  app.get("/loan-requests/:id", (req, res) => {
+    const user = userOf(ctx, req);
+    const request = lending.request(req.params.id);
+    if (request.user_id !== user.id) throw new HttpError(403, "Not your request");
+    res.json({ ...lending.requestView(request), loan: request.loan_id ? lending.view(lending.get(request.loan_id)) : null });
+  });
+  app.post("/loan-requests/:id/decline", (req, res) => { res.json(lending.declineRequest(userOf(ctx, req), req.params.id)); });
+
+  // Collateral borrowing: pledge the chosen past messages (messageIds), optionally approving a request.
   app.post("/loans", wrap(async (req, res) => {
     const user = userOf(ctx, req);
-    let amount: bigint;
-    try { amount = toUnits(String(req.body?.amount ?? "")); }
-    catch { throw new HttpError(400, "amount must be a decimal USDM amount, e.g. \"5\""); }
-    res.status(201).json(await lending.borrow(user, amount));
+    res.status(201).json(await lending.borrow(user, {
+      amount: amountOf(req.body?.amount), messageIds: req.body?.messageIds,
+      requestId: typeof req.body?.requestId === "string" ? req.body.requestId : undefined,
+    }));
   }));
 
   app.get("/me/loans", (req, res) => { res.json(lending.list({ userId: userOf(ctx, req).id })); });

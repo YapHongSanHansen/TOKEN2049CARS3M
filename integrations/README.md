@@ -29,7 +29,7 @@ mcp_servers:
 
 Optionally copy `integrations/skills/carsem/` into the profile's `skills/` folder, then run `hermes -p carsem` and ask: *"Find me the information of trading signals on CARSEM, I would like to make some extra pocket money on Cardano DEX trades."*
 
-Sync what Hermes knows about you (memories + your messages, redacted on your machine): `npm run sync -- --source hermes --profile carsem --yes`.
+Add what Hermes knows about you to your past messages (memories + your messages, redacted on your machine): `npm run sync -- --source hermes --profile carsem --yes`.
 
 ## Claude Code
 
@@ -37,7 +37,7 @@ Sync what Hermes knows about you (memories + your messages, redacted on your mac
 claude mcp add --transport http carsem http://localhost:4031/mcp --header "Authorization: Bearer csm_your_key"
 ```
 
-Optionally copy `integrations/skills/carsem/` to `~/.claude/skills/carsem/`. Sync your Claude Code history: `npm run sync -- --source claude-code --yes`.
+Optionally copy `integrations/skills/carsem/` to `~/.claude/skills/carsem/`. Add your Claude Code history to your past messages: `npm run sync -- --source claude-code --yes`.
 
 ## ChatGPT and Claude (web and desktop)
 
@@ -47,7 +47,7 @@ Add a custom connector with your personal URL (the key is in the path because th
 https://<your-public-gateway>/mcp/k/csm_your_key
 ```
 
-This needs a public HTTPS URL (ngrok). Custom connectors depend on your ChatGPT / Claude plan. Bring your history with the app's data export, then `npm run sync -- --source chatgpt-export --path conversations.json --yes` (or `claude-export`).
+This needs a public HTTPS URL (ngrok). Custom connectors depend on your ChatGPT / Claude plan. Bring your history with the app's data export: import `conversations.json` in the My agent sidebar, or run `npm run sync -- --source chatgpt-export --path conversations.json --yes` (or `claude-export`).
 
 ## curl
 

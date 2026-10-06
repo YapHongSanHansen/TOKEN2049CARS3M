@@ -77,13 +77,13 @@ export class UserAgent {
       if (!profile.onboarded) {
         return { onboarded: false, next: `Open ${profile.connect.onboarding} to verify with your Masumi DID (KYC + consent). CARSEM tools work after that.`, steps: profile.steps };
       }
-      const [{ usdm, lovelace }, loans, synced] = await Promise.all([this.balances(), this.carsem<any[]>("/me/loans"), this.carsem("/me/sync")]);
+      const [{ usdm, lovelace }, loans, history] = await Promise.all([this.balances(), this.carsem<any[]>("/me/loans"), this.carsem("/me/messages")]);
       const open = loans.find(l => l.status === "open");
       return {
         onboarded: true,
         identity: { did: profile.identity?.did, kyc: profile.kyc.status, agentDid: profile.agent?.did, masumi: profile.agent?.masumi },
         wallet: { address: this.wallet!.address, USDM: fromUnits(usdm), tADA: fromUnits(lovelace) },
-        syncedContext: { items: synced.items, readyToBorrow: synced.readyToBorrow, lastSyncedAt: synced.lastSyncedAt },
+        pastMessages: { count: history.messages.length, canBorrow: history.canBorrow, minimumToPledge: history.minimumToPledge },
         openLoan: open ? { loan_id: open.id, outstanding_usdm: open.outstanding, deadline: open.deadline, seconds_left: open.secondsLeft } : null,
         earnings_usdm: profile.earnings,
       };
@@ -136,27 +136,70 @@ export class UserAgent {
     });
   }
 
-  syncContext(input: { items: string[]; source?: string }) {
-    return this.call("sync_context", { items: `${input.items.length} item(s)`, source: input.source ?? "assistant" }, async () => {
-      const result = await this.carsem("/me/sync", { body: { source: input.source ?? "assistant", items: input.items } });
-      return { added: result.added, duplicates: result.duplicates, withheld: result.withheld, total_items: result.items, ready_to_borrow: result.readyToBorrow, note: "Redacted by CARSEM on arrival; raw text is never stored." };
+  /** Adds past messages to the user's history (redacted by CARSEM on arrival). */
+  addMessages(input: { messages: string[]; source?: string }) {
+    return this.call("add_messages", { messages: `${input.messages.length} message(s)`, source: input.source ?? "assistant" }, async () => {
+      const result = await this.carsem("/me/sync", { body: { source: input.source ?? "assistant", items: input.messages } });
+      return { added: result.added, duplicates: result.duplicates, withheld: result.withheld, total_messages: result.messages, note: "Redacted by CARSEM on arrival; raw text is never stored." };
     });
   }
 
-  borrow(input: { amount_usdm: string }) {
+  private async candidates() {
+    const { messages, minimumToPledge } = await this.carsem<{ messages: Array<{ id: number; text: string; intents: string[]; source: string; state: string | null }>; minimumToPledge: number }>("/me/messages");
+    return { minimum: minimumToPledge, messages: messages.filter(m => !m.state).slice(0, 25).map(m => ({ id: m.id, text: m.text, intents: m.intents, source: m.source })) };
+  }
+
+  listMyMessages() {
+    return this.call("list_my_messages", {}, async () => {
+      const { minimum, messages } = await this.candidates();
+      return { minimum_to_pledge: minimum, messages };
+    });
+  }
+
+  private loanView(loan: any) {
+    return {
+      status: "borrowed" as const, loan_id: loan.id, amount_usdm: loan.amount, fee_usdm: loan.fee, total_due_usdm: loan.totalDue, deadline: loan.deadline, seconds_left: loan.secondsLeft,
+      collateral: `${loan.collateral.items} of your past messages pledged (collateral_ref ${String(loan.collateral.ref).slice(0, 16)}…)`,
+      disburse_tx: loan.disburseTx?.hash, disburse_explorer: loan.disburseTx?.explorerUrl,
+    };
+  }
+
+  /**
+   * Collateral borrowing. Without message_ids it opens a request and returns the user's past
+   * messages to choose from; with message_ids (chosen by the user) it takes the loan.
+   */
+  borrow(input: { amount_usdm: string; purpose?: string; message_ids?: number[]; request_id?: string }) {
     return this.call("borrow", input, async () => {
-      try {
-        const loan = await this.carsem("/loans", { body: { amount: String(input.amount_usdm) } });
-        return {
-          status: "borrowed" as const, loan_id: loan.id, amount_usdm: loan.amount, fee_usdm: loan.fee, total_due_usdm: loan.totalDue, deadline: loan.deadline, seconds_left: loan.secondsLeft,
-          collateral: `${loan.collateral.items} redacted items locked (collateral_ref ${String(loan.collateral.ref).slice(0, 16)}…)`,
-          disburse_tx: loan.disburseTx?.hash, disburse_explorer: loan.disburseTx?.explorerUrl,
-        };
-      } catch (error) {
-        if (error instanceof ApiError && (error.body as { code?: string })?.code === "sync_required") {
-          return { status: "sync_required" as const, message: (error.body as { error: string }).error, next: "Call sync_context with what you know about the user (short factual lines from this conversation and your memory), then borrow again." };
-        }
-        throw error;
+      if (input.message_ids?.length) {
+        const loan = await this.carsem("/loans", { body: { amount: String(input.amount_usdm), messageIds: input.message_ids, requestId: input.request_id } });
+        return this.loanView(loan);
+      }
+      const request = await this.carsem("/loan-requests", { body: { amount: String(input.amount_usdm), purpose: input.purpose ?? "" } });
+      const { minimum, messages } = await this.candidates();
+      const profile = await this.carsem("/me");
+      return {
+        status: "selection_required" as const,
+        request_id: request.id,
+        amount_usdm: request.amount,
+        minimum_to_pledge: minimum,
+        your_messages: messages,
+        approve_in_app: String(profile.connect.onboarding).replace("#start", "#agent"),
+        next: messages.length >= minimum
+          ? `Ask the user which of these past messages to pledge as collateral (at least ${minimum}), then call borrow again with message_ids and request_id. If you cannot ask them directly, call borrow_status with wait_seconds so they can choose in the CARSEM app.`
+          : `The user has only ${messages.length} past message(s); at least ${minimum} are needed. Add what you know about them with add_messages (or they can import their chat history), then borrow again.`,
+      };
+    });
+  }
+
+  borrowStatus(input: { request_id: string; wait_seconds?: number }) {
+    return this.call("borrow_status", input, async () => {
+      const deadline = Date.now() + Math.min(Math.max(input.wait_seconds ?? 0, 0), 900) * 1000;
+      for (;;) {
+        const request = await this.carsem(`/loan-requests/${encodeURIComponent(input.request_id)}`);
+        if (request.status === "approved" && request.loan) return this.loanView(request.loan);
+        if (request.status !== "pending") return { status: request.status as "declined" | "expired", request_id: request.id };
+        if (Date.now() >= deadline) return { status: "pending" as const, request_id: request.id, message: "The user has not chosen yet." };
+        await new Promise(resolve => setTimeout(resolve, 1500));
       }
     });
   }

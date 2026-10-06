@@ -115,14 +115,19 @@ MCP (Hermes, Claude Code, ChatGPT, Claude): ${config.publicUrl}/mcp   or   ${con
     const who = await resolve(req.get("Authorization"));
     if (running.has(who.profile.id)) { res.status(409).json({ error: "Your agent is already working on a task" }); return; }
     running.add(who.profile.id);
+    // What the user asks becomes one of their past messages (redacted by CARSEM, covered by their consent).
+    await api(config.apiUrl, "/me/sync", { body: { source: "tool_queries", items: [message] }, headers: { Authorization: `Bearer ${who.key}` } }).catch(() => undefined);
     const json = req.query.format === "json";
     const events: AgentEvent[] = [];
     if (!json) res.type("text/plain").set("Cache-Control", "no-cache");
     const emit = (event: AgentEvent) => { events.push(event); const line = formatEvent(event); if (!json && line) res.write(`${line}\n`); };
+    // Tool events are logged by the agent; the run's own events (prompt, replies, finish) are logged here,
+    // so the web chat can show every conversation, whichever app started it.
+    const runEmit = (event: AgentEvent) => { custody.log(who.profile.id, event.type, event); emit(event); };
     try {
       const result = await runAgent(message, {
         agent: agentFor(who.key, who.profile, emit, req.body?.forceOutcome),
-        config, emit, brain: req.body?.brain as Brain | undefined,
+        config, emit: runEmit, brain: req.body?.brain as Brain | undefined,
       });
       if (json) res.json({ ...result, events }); else res.end();
     } catch (error) {
