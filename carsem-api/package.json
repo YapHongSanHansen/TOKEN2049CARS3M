@@ -1,0 +1,29 @@
+{
+  "name": "@carsem/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "seed": "tsx src/seed.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "wallets:new": "tsx src/scripts/new-wallets.ts",
+    "preflight": "tsx src/scripts/preflight.ts"
+  },
+  "dependencies": {
+    "@carsem/shared": "0.1.0",
+    "@evolution-sdk/evolution": "0.5.13",
+    "@x402/cardano": "2.26.0",
+    "@x402/core": "2.26.0",
+    "@x402/express": "2.26.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "@scure/bip39": "2.4.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "carsem",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CARSEM: agents that borrow against redacted user data to pay x402 paywalls on Cardano.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "workspaces": [
+    "shared",
+    "carsem-api",
+    "agent",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w carsem-api",
+    "api": "npm run start -w carsem-api",
+    "seed": "npm run seed -w carsem-api --",
+    "agent": "npm run run -w agent --",
+    "agent:buy": "npm run buy -w agent",
+    "agent:serve": "npm run serve -w agent",
+    "enterprise:buy": "npm run enterprise -w agent --",
+    "facilitator:up": "sh facilitator/up.sh",
+    "facilitator:down": "sh facilitator/down.sh",
+    "typecheck": "npm run typecheck --workspaces && tsc -p tsconfig.tests.json",
+    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
+    "wallets:new": "npm run wallets:new -w carsem-api",
+    "preflight": "npm run preflight -w carsem-api",
+    "web": "npm run dev -w frontend",
+    "demo": "concurrently -k -n api,agent,web -c blue,magenta,green \"npm run dev -w carsem-api\" \"npm run serve -w agent\" \"npm run dev -w frontend\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "concurrently": "^10.0.5"
+  }
+}
