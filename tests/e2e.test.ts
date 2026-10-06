@@ -150,6 +150,18 @@ describe("agent loop", () => {
     assert.deepEqual((await json(`${url}/market/bundles`)).body, []);
   });
 
+  it("rescue: loss -> user tops up -> 'repay my loan' repays in full", async () => {
+    const { agentConfig, wallet, emit, ctx, url } = await startStack();
+    await runAgent("Trade MIN for me", { config: agentConfig, wallet, emit, brain: "scripted", forceOutcome: "loss" });
+    const early = await runAgent("Repay my loan", { config: agentConfig, wallet, emit, brain: "scripted" });
+    assert.match(early.summary, /still missing/);
+    await fetch(`${url}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: wallet.address, usdm: "5.05" }) });
+    const result = await runAgent("Repay my loan", { config: agentConfig, wallet, emit, brain: "scripted" });
+    assert.match(result.summary, /Repaid loan/);
+    const [loan] = ctx.lending.list({ agentId: "agent-demo" });
+    assert.equal(loan.status, "repaid");
+  });
+
   it("an enterprise purchase while the loan is open repays it and credits the data owner", async () => {
     const { agentConfig, wallet, emit, ctx, url } = await startStack();
     const tools = new AgentTools(agentConfig, wallet, emit);
