@@ -17,7 +17,9 @@ function buyerOf(ctx: Context, req: Request) {
 
 export function dataGuards(app: Express, ctx: Context) {
   app.get("/data/listings/:id", (req, res, next) => {
-    ctx.data.listing(req.params.id);
+    const listing = ctx.data.listing(req.params.id);
+    // Free (older) data: anyone can read it, no x402 payment.
+    if (ctx.data.isFree(listing)) { res.json({ listing: ctx.data.publicListing(listing), free: true }); return; }
     const { jobId } = buyerOf(ctx, req);
     if (jobId) {
       const job = ctx.db.get<{ status: string }>("SELECT status FROM jobs WHERE id = ?", jobId);
@@ -36,6 +38,12 @@ export function dataRoutes(app: Express, ctx: Context) {
     res.json(data.search(data.category(req.query.category), typeof req.query.q === "string" ? req.query.q : ""));
   });
   app.get("/data/uploaders", (_req, res) => { res.json(data.uploaders()); });
+  // Public. With a key, the data the viewer already bought shows unlocked (a stale key just browses).
+  app.get("/data/market", (req, res) => {
+    let viewer;
+    try { viewer = req.get("Authorization") ? userOf(ctx, req) : undefined; } catch { viewer = undefined; }
+    res.json(data.market(viewer));
+  });
 
   // Paid: 402 until an x402 payment of the listing's price settles.
   app.get("/data/listings/:id", (req, res) => {

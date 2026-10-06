@@ -7,7 +7,8 @@ export interface Health {
 export interface TxRef { hash: string; explorerUrl: string }
 export interface Profile {
   id: string; name: string; onboarded: boolean;
-  steps: { kyc: string; consent: string; agent: boolean };
+  steps: { wallet: string; kyc: string; consent: string; agent: boolean };
+  wallet: { name: string | null; id: string; payoutAddress: string | null; proof: string; verifiedAt: string; explorerUrl: string };
   kyc: { status: string; provider: string; verifiedAt: string | null };
   identity: { did: string; didDocument: string; credential: { jwt: string; revoked: boolean; issuer: string } } | null;
   agent: { id: string; name: string; did: string; address: string; masumi: { registered: boolean; agentIdentifier?: string; note?: string }; explorerUrl: string } | null;
@@ -40,6 +41,10 @@ export interface Listing {
   publicAccess: { price: string; buyers: number; accessUrl: string; youOwnIt: boolean; isYours: boolean } | null;
 }
 export interface Sale { id: string; bundleId: string; channel: string; enterprise: string | null; buyerUserId: string | null; price: string; paymentTx: string; loanId: string | null; appliedToLoan: string; toUser: string; toPlatform: string; at: string }
+export interface MarketItem {
+  id: string; category: "signal" | "flight" | "hotel"; title: string; price: string; free: boolean; unlocked: boolean;
+  data: Record<string, unknown> | null; uploadedAt: string; uploader: { id: string; name: string; address: string | null; reputation: number };
+}
 export interface Uploader { id: string; name: string; reputation: number; hits: number; misses: number; listings: number }
 export interface Category { category: string; price: string; listings: number }
 export interface Activity { at: string; type: string; tx: TxRef | null; [key: string]: unknown }

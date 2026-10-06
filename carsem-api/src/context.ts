@@ -9,6 +9,7 @@ import type { Lending } from "./services/lending.js";
 import type { Market } from "./services/market.js";
 import type { Sync } from "./services/sync.js";
 import type { UserRow, Users } from "./services/users.js";
+import type { WalletAuth } from "./services/wallet.js";
 import type { Paywall } from "./x402.js";
 
 export interface Context {
@@ -18,6 +19,7 @@ export interface Context {
   paywall: Paywall;
   issuer: Issuer;
   users: Users;
+  walletAuth: WalletAuth;
   sync: Sync;
   data: DataPlatform;
   lending: Lending;

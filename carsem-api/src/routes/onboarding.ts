@@ -7,10 +7,11 @@ import { wrap } from "./wrap.js";
 
 /** Onboarding gate, identity documents and data sync. */
 export function onboardingRoutes(app: Express, ctx: Context) {
-  const { config, users, issuer, sync, db } = ctx;
+  const { config, users, issuer, sync, db, walletAuth } = ctx;
 
   app.get("/onboarding/config", (_req, res) => {
     res.json({
+      wallet: { recommended: "lace", standard: "CIP-30", proof: "CIP-8 signData", network: "preprod" },
       kycProvider: "mock",
       issuer: issuer.did,
       consentText: "Allow my agent to borrow against my redacted chats. If my agent does not repay by the deadline, my redacted chats are published on CARSEM and sold to any user for a fee.",
@@ -20,10 +21,13 @@ export function onboardingRoutes(app: Express, ctx: Context) {
     });
   });
 
-  // 0. Open an account. The key is shown once.
-  app.post("/onboarding/start", (req, res) => {
-    const { user, apiKey } = users.start(String(req.body?.name ?? ""));
-    res.status(201).json({ apiKey, profile: users.profile(user) });
+  // 0. Connect your Cardano wallet (Lace or any CIP-30 wallet): sign a one-time message, then get your CARSEM key.
+  //    The same wallet always opens the same account.
+  app.post("/onboarding/wallet/challenge", (req, res) => { res.json(walletAuth.challenge(String(req.body?.address ?? ""))); });
+  app.post("/onboarding/wallet/verify", (req, res) => {
+    const wallet = walletAuth.verify(req.body ?? {});
+    const { user, apiKey, returning } = users.signInWithWallet(wallet, req.body ?? {});
+    res.status(returning ? 200 : 201).json({ apiKey, returning, profile: users.profile(user) });
   });
 
   app.get("/me", (req, res) => { res.json(users.profile(userOf(ctx, req))); });
@@ -41,7 +45,7 @@ export function onboardingRoutes(app: Express, ctx: Context) {
   app.get("/users/:id/did.json", (req, res) => {
     const user = users.get(req.params.id);
     if (!user.did) throw new HttpError(404, "This user has no DID yet");
-    res.json(issuer.userDidDocument(user.id, users.agentOf(user.id)?.did));
+    res.json(issuer.userDidDocument(user.id, users.agentOf(user.id)?.did, { id: user.wallet_id, publicKey: user.wallet_public_key }));
   });
   app.get("/credentials/status/:userId", (req, res) => {
     const user = users.get(req.params.userId);

@@ -1,0 +1,22 @@
+/* Not part of the pasted component: written for it. The root's gradient is the fallback when WebGL is unavailable. */
+.root {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(90% 70% at 28% 22%, color-mix(in srgb, var(--liquid-metal-highlight) 26%, transparent), transparent 60%),
+    radial-gradient(80% 70% at 72% 74%, color-mix(in srgb, var(--liquid-metal-mid) 34%, transparent), transparent 62%),
+    var(--liquid-metal-base);
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.root[data-webgl="false"] .canvas {
+  display: none;
+}

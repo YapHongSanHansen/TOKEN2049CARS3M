@@ -13,6 +13,8 @@ import { paidFetch, type X402Step } from "./x402Client.js";
 export type AgentEvent =
   | { type: "run_started"; message: string; brain: string }
   | { type: "assistant"; text: string }
+  /** OpenUI Lang the web chat renders (see @carsem/shared/genui). */
+  | { type: "ui"; code: string }
   | { type: "tool_call"; tool: string; input: unknown }
   | { type: "tool_result"; tool: string; result: unknown }
   | { type: "x402"; tool: string; step: X402Step["step"]; detail: Record<string, unknown> }
@@ -93,7 +95,7 @@ export class UserAgent {
   searchData(input: { category: string; query?: string }) {
     return this.call("search_data", input, async () => {
       const results = await this.carsem<any[]>(`/data/search?category=${encodeURIComponent(input.category)}&q=${encodeURIComponent(input.query ?? "")}`);
-      return { results: results.map(r => ({ listing_id: r.id, title: r.title, price_usdm: r.price, uploader: r.uploader.name, uploader_reputation: r.uploader.reputation, published_at: r.publishedAt, validated: r.validated })) };
+      return { results: results.map(r => ({ listing_id: r.id, title: r.title, price_usdm: r.price, free: r.free, uploader: r.uploader.name, uploader_reputation: r.uploader.reputation, published_at: r.publishedAt, validated: r.validated })) };
     });
   }
 
@@ -128,6 +130,9 @@ export class UserAgent {
       }
       if (result.declined) return { status: "not_paid" as const, reason: result.declined };
       if (result.status !== 200) return { status: "failed" as const, http: result.status, error: result.body?.error ?? result.receipt?.errorReason };
+      if (result.body.free) {
+        return { status: "free" as const, listing: result.body.listing, message: "Free data (older, from about 5 days ago): no payment needed. Fresh data is paid; buy it to trade a signal." };
+      }
       const { listing, delivery, payment } = result.body;
       return {
         status: "delivered" as const, listing, delivery_id: delivery.id, delivery_hash: delivery.hash,

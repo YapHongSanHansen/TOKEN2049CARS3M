@@ -10,8 +10,21 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@cardano-foundation/cardano-connect-with-wallet-core": "0.2.12",
+    "@carsem/shared": "0.1.0",
+    "@openuidev/react-lang": "^0.3.1",
+    "@radix-ui/react-slot": "^1.4.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.575.0",
+    "motion": "^14.0.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "shiki": "^4.5.0",
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss": "^4.3.3",
+    "zod": "^4.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.0",

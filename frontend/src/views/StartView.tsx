@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { get, post, saveKey, type Profile } from "../api";
+import { LaceMissingError, signInWithLace, walletLabel, type ConnectStage } from "../cardano";
 import { Badge, CopyBlock, ErrorNote, Panel, decodeJwt, short } from "../components";
 import { useHealth, useSession } from "../hooks";
+import { SignUpForm, type SignUpValues } from "@/components/motion/signup-form";
 
-const STEPS = ["Account", "Verify (KYC)", "Consent", "Masumi identity", "Connect your AI"] as const;
+const STEPS = ["Connect wallet", "Verify (KYC)", "Consent", "Masumi identity", "Connect your AI"] as const;
 
 export function StartView() {
   const { key, profile, setKey, refresh } = useSession();
@@ -12,12 +14,12 @@ export function StartView() {
     <div className="start">
       <header className="start-head">
         <h1>Verify once, then use CARSEM from any AI app</h1>
-        <p className="muted">ChatGPT, Claude, Claude Code, Hermes or curl. Every app goes through the same gate: a Masumi-compatible DID with a KYC credential, and your consent. Then your agent gets one platform wallet.</p>
+        <p className="muted">ChatGPT, Claude, Claude Code, Hermes or curl. Every app goes through the same gate: your Cardano wallet, a Masumi-compatible DID with a KYC credential, and your consent. Then your agent gets its own wallet to pay for data.</p>
         <ol className="stepper">
           {STEPS.map((label, i) => <li key={label} className={i < step ? "done" : i === step ? "current" : ""}><span>{i < step ? "✓" : i + 1}</span>{label}</li>)}
         </ol>
       </header>
-      {step === 0 && <AccountStep onKey={setKey} />}
+      {step === 0 && <WalletStep onKey={setKey} />}
       {step === 1 && <KycStep onDone={refresh} />}
       {step === 2 && <ConsentStep onDone={refresh} />}
       {step === 3 && <IdentityStep onDone={refresh} />}
@@ -37,26 +39,78 @@ function useAction() {
   return { busy, error, run };
 }
 
-function AccountStep({ onKey }: { onKey(key: string): void }) {
-  const [name, setName] = useState("");
-  const [existing, setExisting] = useState("");
-  const { busy, error, run } = useAction();
+const STAGE_TEXT: Record<ConnectStage, string> = {
+  connecting: "Approve in Lace…",
+  signing: "Sign in Lace…",
+  verifying: "Signing you in…",
+};
+
+/**
+ * Step 0: one button. Connect Lace and sign CARSEM's one-time message (free, no funds move).
+ * One wallet = one CARSEM account.
+ */
+const RELOADED = "carsem.connectAfterReload";
+const session = {
+  get: () => { try { return sessionStorage.getItem(RELOADED); } catch { return null; } },
+  set: () => { try { sessionStorage.setItem(RELOADED, "1"); } catch { /* private mode */ } },
+  clear: () => { try { sessionStorage.removeItem(RELOADED); } catch { /* private mode */ } },
+};
+
+const NAME_KEY = "carsem.signupName";
+const onlyNameAndTerms = (v: SignUpValues) => ({ ...(v.name.trim() ? {} : { name: "Enter your name." }), ...(v.terms ? {} : { terms: "Accept the terms to continue." }) });
+
+function WalletStep({ onKey }: { onKey(key: string): void }) {
+  const [stage, setStage] = useState<ConnectStage>();
+  const [error, setError] = useState<string>();
+  const started = useRef(false);
+  const connect = async (name: string) => {
+    setError(undefined);
+    try {
+      const { apiKey } = await signInWithLace(setStage, name);
+      session.clear();
+      saveKey(apiKey); onKey(apiKey);
+    } catch (error) {
+      // Chrome only adds an extension to pages loaded after it was installed. Reload once and carry on.
+      if (error instanceof LaceMissingError && !session.get()) { session.set(); try { sessionStorage.setItem(NAME_KEY, name); } catch { /* ignore */ } window.location.reload(); return new Promise<void>(() => {}); }
+      session.clear();
+      setError((error as Error).message);
+      throw error;
+    } finally { setStage(undefined); }
+  };
+  // Continue the submit that triggered the reload.
+  useEffect(() => {
+    if (session.get() && !started.current) { started.current = true; let name = ""; try { name = sessionStorage.getItem(NAME_KEY) ?? ""; } catch { /* ignore */ } void connect(name).catch(() => undefined); }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <div className="step-grid">
-      <Panel title="Create your account">
-        <form onSubmit={e => { e.preventDefault(); void run(async () => { const r = await post<{ apiKey: string }>("/api/onboarding/start", { name }); saveKey(r.apiKey); onKey(r.apiKey); }); }}>
-          <label className="field">Your name<input value={name} onChange={e => setName(e.target.value)} placeholder="Alice" autoFocus /></label>
-          <button className="primary" disabled={busy || !name.trim()}>Continue</button>
-        </form>
-        <ErrorNote error={error} />
-      </Panel>
-      <Panel title="Already have a CARSEM key?">
-        <form onSubmit={e => { e.preventDefault(); saveKey(existing.trim()); onKey(existing.trim()); }}>
-          <label className="field">Key<input value={existing} onChange={e => setExisting(e.target.value)} placeholder="csm_…" /></label>
-          <button className="ghost" disabled={!existing.trim().startsWith("csm_")}>Sign in</button>
-        </form>
-      </Panel>
+    <div className="connect-hero beui">
+      <SignUpForm
+        className="wallet-signup bg-card"
+        classNames={{ fields: "ws-fields" }}
+        title="Create your CARSEM account"
+        description={stage ? STAGE_TEXT[stage] : "Your Cardano wallet is your account: Lace signs a one-time message (free, no funds move)."}
+        submitLabel="Connect Lace"
+        strengthMeter={false}
+        validate={onlyNameAndTerms}
+        errorMessage={error}
+        onSubmit={values => connect(values.name.trim())}
+        footer={<>Already verified? Open <a href="#agent" className="font-medium text-foreground underline underline-offset-4">My agent</a>.</>}
+      />
+      <KeySignIn onKey={onKey} />
     </div>
+  );
+}
+
+/** For terminal users who already have a CARSEM key. */
+function KeySignIn({ onKey }: { onKey(key: string): void }) {
+  const [existing, setExisting] = useState("");
+  return (
+    <details className="key-signin">
+      <summary>Have a CARSEM key?</summary>
+      <form onSubmit={e => { e.preventDefault(); saveKey(existing.trim()); onKey(existing.trim()); }}>
+        <label className="field">Key<input value={existing} onChange={e => setExisting(e.target.value)} placeholder="csm_…" /></label>
+        <button className="ghost" disabled={!existing.trim().startsWith("csm_")}>Sign in</button>
+      </form>
+    </details>
   );
 }
 
@@ -136,13 +190,15 @@ function ConnectStep({ profile, keyValue }: { profile: Profile; keyValue: string
   return (
     <div className="connect-grid">
       <Panel title="Your Masumi identity" actions={<Badge tone="good">verified</Badge>}>
+        <div className="kv"><span>Your wallet</span><a href={profile.wallet.explorerUrl} target="_blank" rel="noreferrer" title={profile.wallet.id}><code>{short(profile.wallet.id, 14, 6)}</code></a></div>
+        <div className="kv"><span>Signed in with</span><span>{walletLabel(profile.wallet.name)} · CIP-8 signature</span></div>
         <div className="kv"><span>Your DID</span><code title={profile.identity?.did}>{short(profile.identity?.did ?? "", 26, 14)}</code></div>
         <div className="kv"><span>Credential</span><span>{credential?.type?.[1] ?? "KycVerifiedCredential"} · signed by CARSEM</span></div>
         <div className="kv"><span>Agent DID</span><code title={profile.agent?.did}>{short(profile.agent?.did ?? "", 26, 12)}</code></div>
         <div className="kv"><span>Masumi registry</span><span>{profile.agent?.masumi.registered ? short(profile.agent.masumi.agentIdentifier ?? "", 10, 6) : "on preprod (pending)"}</span></div>
         <div className="kv"><span>Agent wallet</span><code title={profile.agent?.address}>{short(profile.agent?.address ?? "", 14, 6)}</code></div>
         <div className="kv"><span>Balance</span><strong>{balance ?? "…"} USDM</strong></div>
-        <p className="muted small">One identity, one agent, one platform wallet. Your agent starts with 0.05 USDM, so a 5 USDM paywall will need collateral borrowing.</p>
+        <p className="muted small">One wallet, one identity, one agent. Your agent's wallet starts with 0.05 USDM, so a 5 USDM paywall will need collateral borrowing.</p>
         <CopyBlock label="Your CARSEM key (keep it secret)" code={keyValue} />
       </Panel>
 

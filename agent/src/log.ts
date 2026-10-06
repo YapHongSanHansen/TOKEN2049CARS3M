@@ -10,6 +10,7 @@ export function formatEvent(event: AgentEvent): string | undefined {
   switch (event.type) {
     case "run_started": return `\n▶ ${event.message}   [brain: ${event.brain}]\n`;
     case "assistant": return `🤖 ${event.text}`;
+    case "ui": return undefined; // OpenUI Lang: drawn by the web chat, nothing for the terminal
     case "tool_call": return `  → ${event.tool}(${short(event.input, 120)})`;
     case "tool_result": return `  ← ${event.tool}: ${short(event.result)}`;
     case "x402": return `     x402 ${event.step.padEnd(8)} ${short(event.detail, 160)}`;

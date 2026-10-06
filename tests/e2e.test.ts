@@ -10,10 +10,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ExactCardanoScheme } from "@x402/cardano/exact/client";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
+import { checkUi } from "@carsem/shared/genui";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
 import { NETWORK, SimWallet, redactMessage, toUnits } from "@carsem/shared";
 import type { GatewayConfig } from "../agent/src/config.js";
 import { Custody } from "../agent/src/custody.js";
+import { connectWallet, devWallet, type DevWallet } from "../agent/src/devWallet.js";
 import { createGateway } from "../agent/src/gateway.js";
 import { simWallet } from "../agent/src/wallet.js";
 import { paidFetch } from "../agent/src/x402Client.js";
@@ -60,9 +62,12 @@ const call = async (url: string, init: { method?: string; body?: unknown; key?: 
   return { status: response.status, body: await response.json() as any };
 };
 
+/** Step 0, as the web app does with Lace: challenge → CIP-30 signData → verify. */
+const signIn = async (apiUrl: string, name: string, wallet: DevWallet = devWallet()) => (await connectWallet(apiUrl, wallet, { name })).apiKey;
+
 let docCounter = 0;
 async function onboard(apiUrl: string, name: string, options: { doc?: string; sync?: string[]; allowSaleWhileOpen?: boolean } = {}) {
-  const { body: { apiKey } } = await call(`${apiUrl}/onboarding/start`, { body: { name } });
+  const apiKey = await signIn(apiUrl, name);
   const kyc = await call(`${apiUrl}/onboarding/kyc`, { key: apiKey, body: { fullName: name, documentNumber: options.doc ?? `DOC${++docCounter}${Date.now()}`, country: "MY" } });
   assert.equal(kyc.status, 200, JSON.stringify(kyc.body));
   assert.equal((await call(`${apiUrl}/onboarding/consent`, { key: apiKey, body: { allowBorrowing: true, allowSaleWhileOpen: options.allowSaleWhileOpen ?? true } })).status, 200);
@@ -106,10 +111,38 @@ const CHATS = [
   "Find me trading signals, I want pocket money on Cardano DEX trades",
 ];
 
-describe("onboarding gate (Masumi DID + KYC + consent)", () => {
+describe("onboarding gate (wallet + Masumi DID + KYC + consent)", () => {
+  it("starts with the user's own Cardano wallet: a CIP-8 signature opens one account per wallet", async () => {
+    const { apiUrl } = await startStack();
+    const wallet = devWallet();
+    const first = await connectWallet(apiUrl, wallet, { name: "Dana" });
+    assert.equal(first.returning, false);
+    assert.match(first.profile.wallet.id, /^stake_test1/);
+    assert.match(first.profile.wallet.payoutAddress, /^addr_test1q/);
+
+    // The same wallet opens the same account again; every key keeps working.
+    const again = await connectWallet(apiUrl, wallet);
+    assert.equal(again.returning, true);
+    assert.equal(again.profile.id, first.profile.id);
+    assert.notEqual(again.apiKey, first.apiKey);
+    assert.equal((await call(`${apiUrl}/me`, { key: first.apiKey })).body.id, first.profile.id);
+
+    // Another wallet's signature, a replayed challenge, a wrong network and a bare name are all refused.
+    const challenge = await call(`${apiUrl}/onboarding/wallet/challenge`, { body: { address: wallet.rewardAddress } });
+    const forged = devWallet().signData(challenge.body.signWith, challenge.body.payload);
+    assert.equal((await call(`${apiUrl}/onboarding/wallet/verify`, { body: { challengeId: challenge.body.challengeId, ...forged } })).body.code, "bad_signature");
+    const fresh = await call(`${apiUrl}/onboarding/wallet/challenge`, { body: { address: wallet.rewardAddress } });
+    const signed = wallet.signData(fresh.body.signWith, fresh.body.payload);
+    assert.equal((await call(`${apiUrl}/onboarding/wallet/verify`, { body: { challengeId: fresh.body.challengeId, ...signed } })).status, 200);
+    assert.equal((await call(`${apiUrl}/onboarding/wallet/verify`, { body: { challengeId: fresh.body.challengeId, ...signed } })).body.code, "challenge_expired");
+    const mainnet = await call(`${apiUrl}/onboarding/wallet/challenge`, { body: { address: `e1${wallet.rewardAddress.slice(2)}` } });
+    assert.equal(mainnet.body.code, "wrong_network");
+    assert.equal((await call(`${apiUrl}/onboarding/start`, { body: { name: "No wallet" } })).status, 404);
+  });
+
   it("blocks the platform until the user is verified, then issues a DID, credential and one agent wallet", async () => {
     const { apiUrl, gatewayUrl } = await startStack();
-    const { body: { apiKey } } = await call(`${apiUrl}/onboarding/start`, { body: { name: "Bob" } });
+    const apiKey = await signIn(apiUrl, "Bob");
     const { tool } = await mcp(gatewayUrl, apiKey);
     const status = await tool("carsem_status");
     assert.equal(status.onboarded, false);
@@ -132,7 +165,13 @@ describe("onboarding gate (Masumi DID + KYC + consent)", () => {
     assert.equal((await call(`${apiUrl}/credentials/verify`, { body: { jwt: profile.identity.credential.jwt } })).body.valid, true);
     const [h, p, s] = profile.identity.credential.jwt.split(".");
     assert.equal((await call(`${apiUrl}/credentials/verify`, { body: { jwt: `${h}.${p}.${s.slice(0, -4)}AAAA` } })).status, 400);
-    assert.equal((await call(`${apiUrl}/users/${profile.id}/did.json`)).body.id, profile.identity.did);
+    const didDocument = (await call(`${apiUrl}/users/${profile.id}/did.json`)).body;
+    assert.equal(didDocument.id, profile.identity.did);
+    // The user's own wallet key authenticates as their DID, and the credential names that wallet.
+    assert.equal(didDocument.alsoKnownAs[0], `cardano:preprod:${profile.wallet.id}`);
+    assert.equal(didDocument.verificationMethod[0].publicKeyJwk.crv, "Ed25519");
+    const vc = JSON.parse(Buffer.from(profile.identity.credential.jwt.split(".")[1], "base64url").toString());
+    assert.equal(vc.credentialSubject.cardanoWallet.id, profile.wallet.id);
 
     // Agent wallet got the starter funds: 0.05 USDM, not enough for a 5 USDM paywall.
     const now = await tool("carsem_status");
@@ -143,7 +182,7 @@ describe("onboarding gate (Masumi DID + KYC + consent)", () => {
   it("allows one account per identity document (one platform wallet per person)", async () => {
     const { apiUrl } = await startStack();
     await onboard(apiUrl, "Carol", { doc: "P9999999" });
-    const { body: { apiKey } } = await call(`${apiUrl}/onboarding/start`, { body: { name: "Carol again" } });
+    const apiKey = await signIn(apiUrl, "Carol again");
     const second = await call(`${apiUrl}/onboarding/kyc`, { key: apiKey, body: { fullName: "Carol", documentNumber: "P 9999-999", country: "MY" } });
     assert.equal(second.status, 409);
   });
@@ -218,6 +257,47 @@ describe("the drawing's flow over MCP", () => {
     const missing = await tool("upload_data", { category: "signal", data: { token: "MIN" } });
     assert.match(missing.error, /needs/);
   });
+
+  it("uploading past MAX_ACTIVE_LISTINGS archives the seller's oldest dataset (it becomes free, not deleted)", async () => {
+    const { apiUrl, gatewayUrl } = await startStack({ maxActiveListings: 2 });
+    const { key } = await onboard(apiUrl, "Eve");
+    const { tool } = await mcp(gatewayUrl, key);
+    const ids: string[] = [];
+    for (const store of ["A", "B", "C"]) {
+      const up = await tool("upload_data", { category: "product", data: { name: "Widget", store, price: 1, currency: "MYR" } });
+      ids.push(up.id);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    const listings = (await call(`${apiUrl}/data/search?category=product&q=WIDGET`)).body as Array<{ id: string; free: boolean }>;
+    assert.deepEqual(ids.map(id => listings.find(l => l.id === id)?.free), [true, false, false]);
+  });
+
+  it("Market: each seller has 9 current (locked) datasets and 3 free archived ones (5+ days old, wallet shown)", async () => {
+    const { apiUrl } = await startStack();
+    const market = (await call(`${apiUrl}/data/market`)).body as Array<{ id: string; category: string; free: boolean; unlocked: boolean; data: unknown; uploadedAt: string; uploader: { id: string; address: string } }>;
+    const sellers = new Set(market.map(l => l.uploader.id));
+    assert.equal(sellers.size, 3);
+    for (const seller of sellers) {
+      const items = market.filter(l => l.uploader.id === seller);
+      assert.equal(items.filter(l => !l.free).length, 9, seller);
+      const free = items.filter(l => l.free);
+      assert.equal(free.length, 3, seller);
+      for (const l of free) {
+        assert.ok(l.unlocked && l.data, l.id);
+        assert.match(l.uploader.address, /^addr_test1/);
+        assert.ok(Date.now() - Date.parse(l.uploadedAt) >= 5 * 86_400_000, l.id);
+      }
+      assert.ok(items.filter(l => !l.free).every(l => !l.unlocked && l.data === null), seller);
+    }
+    assert.ok(!market.some(l => l.category === "product"));
+    // Free data needs no key and no payment; fresh data is still a 402.
+    const free = market.find(l => l.free)!;
+    const read = await fetch(`${apiUrl}/data/listings/${free.id}`);
+    assert.equal(read.status, 200);
+    assert.equal((await read.json() as { free: boolean }).free, true);
+    const { key } = await onboard(apiUrl, "Mia");
+    assert.equal((await fetch(`${apiUrl}/data/listings/sig_min`, { headers: { Authorization: `Bearer ${key}` } })).status, 402);
+  });
 });
 
 describe("curl", () => {
@@ -233,6 +313,11 @@ describe("curl", () => {
     assert.equal(ctx.lending.list({})[0].status, "repaid");
     const calls = body.events.filter((e: { type: string }) => e.type === "tool_call").map((e: { tool: string }) => e.tool);
     assert.deepEqual(calls.slice(0, 6), ["carsem_status", "search_data", "buy_data", "borrow", "borrow_status", "buy_data"]);
+    // The agent also answers in OpenUI Lang: results, the paywall, the loan, the data + trade + receipt. Every program must render in full.
+    const programs = body.events.filter((e: { type: string }) => e.type === "ui").map((e: { code: string }) => e.code);
+    assert.ok(programs.length >= 4, `expected UI programs, got ${programs.length}`);
+    for (const code of programs) assert.deepEqual(checkUi(code), { ok: true, errors: [] }, code);
+    assert.ok(programs.some((c: string) => c.includes("Paywall(")) && programs.some((c: string) => c.includes("LoanCard(")) && programs.some((c: string) => c.includes("TradeCard(")));
     // The prompt itself became one of the user's past messages.
     assert.ok((await call(`${apiUrl}/me/messages`, { key })).body.messages.some((m: { source: string }) => m.source === "tool_queries"));
     // Every tool call is in the user's activity feed (for the dashboard).
@@ -315,18 +400,18 @@ describe("x402 and Masumi", () => {
       spendControls: { allowedAssets: [{ network: NETWORK, asset: config.usdmAsset, maxAmountPerPayment: "5000000" }] },
     }));
     const auth = { Authorization: `Bearer ${key}` };
-    const first = await fetch(`${apiUrl}/data/listings/sig_min_09`, { headers: auth });
+    const first = await fetch(`${apiUrl}/data/listings/sig_min`, { headers: auth });
     assert.equal(first.status, 402);
     const offer = decodePaymentRequiredHeader(first.headers.get("PAYMENT-REQUIRED")!).accepts[0];
     assert.equal(offer.amount, "5000000");
     assert.equal(offer.network, NETWORK);
     const payload = await http.createPaymentPayload(http.getPaymentRequiredResponse(name => first.headers.get(name)));
     const headers = { ...auth, ...http.encodePaymentSignatureHeader(payload) };
-    const paid = await fetch(`${apiUrl}/data/listings/sig_min_09`, { headers });
+    const paid = await fetch(`${apiUrl}/data/listings/sig_min`, { headers });
     assert.equal(paid.status, 200);
-    const again = await fetch(`${apiUrl}/data/listings/sig_min_09`, { headers });
+    const again = await fetch(`${apiUrl}/data/listings/sig_min`, { headers });
     assert.equal((await again.json() as any).delivery.hash, (await paid.json() as any).delivery.hash);
-    assert.notEqual((await fetch(`${apiUrl}/data/listings/sig_snek_09`, { headers })).status, 200);
+    assert.notEqual((await fetch(`${apiUrl}/data/listings/sig_snek`, { headers })).status, 200);
     assert.equal((await wallet.balances())[config.usdmAsset], toUnits("5"));
     assert.ok(profile.agent);
   });
@@ -360,5 +445,18 @@ describe("redaction", () => {
     assert.equal(redactMessage("Call Sarah at +60 12-345 6789").redacted, "Call [NAME] at [PHONE]");
     assert.equal(redactMessage("Trip to Bali with my wife Sarah").redacted, "Trip to Bali with [PERSON]");
     assert.equal(redactMessage("Dinner with Ahmad and Mei").redacted, "Dinner with [NAME] and [NAME]");
+  });
+
+  it("never lets an API key or token through, so it can't be pledged or sold", () => {
+    for (const secret of [
+      "csm_oXV8kkD0hioz8HcQh_ssZIAkM2Apx5yR",
+      "here is my key sk-proj-abcdefghijklmnop1234",
+      "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+      "Authorization: Bearer abcdefghijklmnopqrstuvwx",
+      "BLOCKFROST_PROJECT_ID=preprodabc OPENAI_API_KEY=xyz",
+      "where do I put my api key",
+    ]) assert.equal(redactMessage(secret).withheld, "credentials", secret);
+    // Crypto talk is not a credential.
+    assert.equal(redactMessage("Which token should I stake on Minswap").withheld, undefined);
   });
 });

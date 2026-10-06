@@ -57,8 +57,9 @@ function fromClaudeCode(): string[] {
   for (const file of files) {
     for (const line of readFileSync(file, "utf8").split("\n")) {
       try {
-        const entry = JSON.parse(line) as { type?: string; message?: { role?: string; content?: unknown } };
-        if (entry.type !== "user" || entry.message?.role !== "user") continue;
+        const entry = JSON.parse(line) as { type?: string; isMeta?: boolean; message?: { role?: string; content?: unknown } };
+        // isMeta: text Claude Code injects (skill instructions), not something the user typed.
+        if (entry.type !== "user" || entry.isMeta || entry.message?.role !== "user") continue;
         const content = entry.message.content;
         const text = typeof content === "string" ? content
           : Array.isArray(content) ? content.filter((c: { type?: string }) => c?.type === "text").map((c: { text?: string }) => c.text ?? "").join(" ") : "";
@@ -113,8 +114,8 @@ if (!args.includes("--yes")) {
   process.exit(0);
 }
 const sourceTag = source === "hermes" ? "hermes" : source === "claude-code" ? "claude_code" : "export";
-let total: { added: number; duplicates: number; items: number; readyToBorrow: boolean } | undefined;
+let total: { added: number; duplicates: number; messages: number; canBorrow: boolean } | undefined;
 for (let i = 0; i < redacted.length; i += 200) {
   total = await api(config.apiUrl, "/me/sync", { body: { source: sourceTag, items: redacted.slice(i, i + 200).map(m => m.redacted) }, headers: { Authorization: `Bearer ${key}` } });
 }
-console.log(`\nSynced: ${total?.added ?? 0} new, ${total?.duplicates ?? 0} already there. ${total?.items} items in your CARSEM context${total?.readyToBorrow ? " (ready to back a loan)" : ""}.`);
+console.log(`\nSynced: ${total?.added ?? 0} new, ${total?.duplicates ?? 0} already there. ${total?.messages ?? 0} past messages in your CARSEM account${total?.canBorrow ? " (enough to pledge for a loan)" : ""}.`);

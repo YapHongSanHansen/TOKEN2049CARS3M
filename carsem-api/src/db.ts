@@ -3,18 +3,31 @@ import { dirname } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 /** Bump when the schema changes; an older database must be reset (npm run seed -- --reset). */
-export const SCHEMA_VERSION = "3";
+export const SCHEMA_VERSION = "5";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
--- People. One person (KYC subject) = one account = one agent = one platform wallet.
+-- People. One Cardano wallet (Lace, proven with CIP-30 signData) = one KYC subject = one account
+-- = one agent = one platform wallet.
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, api_key_hash TEXT NOT NULL UNIQUE,
+  id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  -- wallet_id: the address the user proved (their stake address; a payment address for wallets without one).
+  -- wallet_address: where earnings and refunds go (Masumi calls this the collection wallet).
+  wallet_id TEXT NOT NULL UNIQUE, wallet_address TEXT, wallet_name TEXT, wallet_public_key TEXT, wallet_verified_at INTEGER NOT NULL,
   did TEXT, kyc_status TEXT NOT NULL DEFAULT 'none' CHECK (kyc_status IN ('none','pending','verified','rejected')),
   kyc_provider TEXT, kyc_ref TEXT, kyc_subject_hash TEXT UNIQUE, kyc_at INTEGER,
   vc_jwt TEXT, vc_revoked INTEGER NOT NULL DEFAULT 0,
   earnings_units TEXT NOT NULL DEFAULT '0', onboarded_at INTEGER, created_at INTEGER NOT NULL
+);
+-- CARSEM keys (Authorization: Bearer csm_…). Each wallet sign-in adds one; only hashes are stored.
+CREATE TABLE IF NOT EXISTS user_keys (
+  key_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS user_keys_user ON user_keys(user_id);
+-- Single-use sign-in messages the wallet signs (CIP-8).
+CREATE TABLE IF NOT EXISTS wallet_challenges (
+  id TEXT PRIMARY KEY, address_hex TEXT NOT NULL, message TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS consents (
   user_id TEXT PRIMARY KEY REFERENCES users(id), status TEXT NOT NULL CHECK (status IN ('active','revoked')),
@@ -42,9 +55,9 @@ CREATE TABLE IF NOT EXISTS bundles (
 );
 
 -- Platform data: trading signals, flight / hotel / product prices. Uploaded by users, not validated;
--- uploader reputation grows from outcomes and ratings.
+-- uploader reputation grows from outcomes and ratings. A listing priced 0 is free (older data).
 CREATE TABLE IF NOT EXISTS uploaders (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, user_id TEXT REFERENCES users(id),
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, user_id TEXT REFERENCES users(id), wallet_address TEXT,
   reputation REAL NOT NULL DEFAULT 0.5, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS listings (

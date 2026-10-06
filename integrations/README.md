@@ -1,6 +1,6 @@
 # Connect your AI app to CARSEM
 
-Every app goes through the same gate first: open the web app (`npm run demo` → http://localhost:5173 → **Get started**), verify (mock KYC), give consent, and you get a Masumi-compatible DID, a KYC credential, one agent with one platform wallet, and a **CARSEM key** (`csm_…`). The gateway URL below is `http://localhost:4031` locally, or your ngrok URL once CARSEM is public.
+Every app goes through the same gate first: open the web app (`npm run demo` → http://localhost:5173 → **Get started**), **connect your Lace wallet** (preprod testnet; you sign a free one-time message), verify (mock KYC), give consent, and you get a Masumi-compatible DID, a KYC credential, one agent with one platform wallet, and a **CARSEM key** (`csm_…`). The gateway URL below is `http://localhost:4031` locally, or your ngrok URL once CARSEM is public.
 
 | App | How it connects | Brain |
 |---|---|---|
@@ -60,4 +60,4 @@ curl http://localhost:4031/v1/tools/search_data -H "Authorization: Bearer $CARSE
   -H "Content-Type: application/json" -d '{"category":"flight","query":"KUL-SIN"}'
 ```
 
-`npm run demo:user -- --save` onboards a demo user from the terminal and saves `CARSEM_KEY` to `.env.local`; then `npm run ask -- "…"` and `npm run tool -- search_data '{"category":"hotel","query":"Geylang"}'` work too.
+`npm run demo:user -- --save` onboards a demo user from the terminal (a software wallet stands in for Lace and signs the same CIP-8 message) and saves `CARSEM_KEY` to `.env.local`; then `npm run ask -- "…"` and `npm run tool -- search_data '{"category":"hotel","query":"Geylang"}'` work too.

@@ -19,6 +19,7 @@ import { GatewayClient } from "./services/gateway.js";
 import { Issuer } from "./services/identity.js";
 import { Sync } from "./services/sync.js";
 import { Users } from "./services/users.js";
+import { WalletAuth } from "./services/wallet.js";
 import { createPaywall } from "./x402.js";
 
 /** Builds the API without listening, so tests and scripts can drive it. */
@@ -38,7 +39,8 @@ export async function createApp(config: Config, options: { db?: Db } = {}) {
     { route: "POST /market/bundles/:id/buy", description: "Private enterprise purchase of a redacted chat bundle at the bid price", price: url => market.bidPrice(market.bid(url.searchParams.get("bid") ?? "")) },
     { route: "POST /market/bundles/:id/access", description: "Access to a published (defaulted) redacted chat bundle", price: () => config.publicAccessPrice },
   ]);
-  const ctx: Context = { config, db, chain, paywall, issuer, users, sync, data, lending, market, dex };
+  const walletAuth = new WalletAuth(db, config.frontendUrl);
+  const ctx: Context = { config, db, chain, paywall, issuer, users, walletAuth, sync, data, lending, market, dex };
 
   const app = express();
   // The payment gate and the routes must recognise exactly the same URLs.

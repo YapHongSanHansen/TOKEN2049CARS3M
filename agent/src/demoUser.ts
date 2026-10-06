@@ -1,7 +1,7 @@
 /**
  * npm run demo:user -- [--name "Alice"] [--doc A12345678] [--country MY] [--save]
- * Walks the onboarding gate against the running API + gateway (start → mock KYC →
- * consent → complete), syncs a few sample chats like the ones in the drawing, and
+ * Walks the onboarding gate against the running API + gateway (connect a wallet → mock KYC →
+ * consent → complete; a software wallet stands in for Lace and signs the same CIP-8 message), adds a few sample chats like the ones in the drawing, and
  * prints the CARSEM key plus the commands to connect Hermes / Claude Code / curl.
  * --save writes CARSEM_KEY into .env.local.
  */
@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import { repoRoot } from "@carsem/shared";
 import { api } from "./api.js";
 import { loadGatewayConfig } from "./config.js";
+import { connectWallet, devWallet } from "./devWallet.js";
 
 const args = process.argv.slice(2);
 const option = (name: string) => { const i = args.indexOf(`--${name}`); return i === -1 ? undefined : args[i + 1]; };
@@ -24,7 +25,7 @@ const SAMPLE_CHATS = [
   "Find me the information of trading signals, I want some extra pocket money on Cardano DEX trades",
 ];
 
-const { apiKey } = await api<{ apiKey: string }>(config.apiUrl, "/onboarding/start", { body: { name } });
+const { apiKey, profile: started } = await connectWallet(config.apiUrl, devWallet(), { name });
 const auth = { Authorization: `Bearer ${apiKey}` };
 await api(config.apiUrl, "/onboarding/kyc", { body: { fullName: name, documentNumber: option("doc") ?? `DEMO${randomBytes(4).toString("hex").toUpperCase()}`, country: option("country") ?? "MY" }, headers: auth });
 await api(config.apiUrl, "/onboarding/consent", { body: { allowBorrowing: true, allowSaleWhileOpen: true }, headers: auth });
@@ -32,10 +33,11 @@ const profile = await api<any>(config.apiUrl, "/onboarding/complete", { body: {}
 const synced = await api<any>(config.apiUrl, "/me/sync", { body: { source: "assistant", items: SAMPLE_CHATS }, headers: auth });
 
 console.log(`\n${name} is onboarded (mock KYC).`);
+console.log(`  wallet       ${started.wallet.id} (software stand-in for Lace)`);
 console.log(`  DID          ${profile.identity.did}`);
 console.log(`  agent DID    ${profile.agent.did}`);
 console.log(`  agent wallet ${profile.agent.address}`);
-console.log(`  synced       ${synced.items} redacted items (ready to borrow: ${synced.readyToBorrow})`);
+console.log(`  messages     ${synced.messages} past messages to choose from when borrowing`);
 console.log(`\nCARSEM_KEY=${apiKey}\n`);
 console.log("Connect your AI:");
 console.log(`  curl     curl -N ${config.publicUrl}/v1/ask -H "Authorization: Bearer ${apiKey}" -H "Content-Type: application/json" -d '{"message":"Find me trading signals on CARSEM"}'`);

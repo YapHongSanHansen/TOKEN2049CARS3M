@@ -21,6 +21,11 @@ export interface DeliveryRow {
   delivery_hash: string; log_tx: string | null; log_status: string; job_id: string | null; traded: number; rating: number | null; created_at: number;
 }
 
+type ListingWithUploader = ListingRow & { uploader_name: string; uploader_address: string | null; reputation: number };
+const WITH_UPLOADER = "l.*, u.name AS uploader_name, u.wallet_address AS uploader_address, u.reputation FROM listings l JOIN uploaders u ON u.id = l.uploader_id";
+/** What the Market page shows (products are for the agent's shopping prompts). */
+const MARKET_CATEGORIES: Category[] = ["signal", "flight", "hotel"];
+
 /** Normalised lookup key per category. */
 export function subjectOf(category: Category, payload: Record<string, unknown>): string {
   const norm = (v: unknown) => String(v ?? "").trim().toUpperCase().replace(/\s+/g, " ");
@@ -58,30 +63,54 @@ export class DataPlatform {
   /** Free search: what is for sale, at what price, from whom. The payload stays behind the paywall. */
   search(category: Category, query = "", limit = 10) {
     const q = `%${query.trim().toUpperCase()}%`;
-    return this.db.all<ListingRow & { uploader_name: string; reputation: number }>(
-      `SELECT l.*, u.name AS uploader_name, u.reputation FROM listings l JOIN uploaders u ON u.id = l.uploader_id
-       WHERE l.category = ? AND (UPPER(l.subject) LIKE ? OR UPPER(l.title) LIKE ?)
+    return this.db.all<ListingWithUploader>(
+      `SELECT ${WITH_UPLOADER} WHERE l.category = ? AND (UPPER(l.subject) LIKE ? OR UPPER(l.title) LIKE ?)
        ORDER BY l.created_at DESC, u.reputation DESC LIMIT ?`, category, q, q, limit)
       .map(l => ({
-        id: l.id, category: l.category, subject: l.subject, title: l.title, price: fromUnits(l.price_units),
-        uploader: { name: l.uploader_name, reputation: Number(l.reputation.toFixed(3)) }, publishedAt: new Date(l.created_at).toISOString(),
+        id: l.id, category: l.category, subject: l.subject, title: l.title, price: fromUnits(l.price_units), free: this.isFree(l),
+        uploader: this.uploaderView(l), publishedAt: new Date(l.created_at).toISOString(),
         validated: false, buyUrl: `${this.config.publicUrl}/data/listings/${l.id}`,
       }));
   }
 
-  listing(id: string): ListingRow & { uploader_name: string; reputation: number } {
-    const listing = this.db.get<ListingRow & { uploader_name: string; reputation: number }>(
-      "SELECT l.*, u.name AS uploader_name, u.reputation FROM listings l JOIN uploaders u ON u.id = l.uploader_id WHERE l.id = ?", id);
+  /**
+   * The Market page: signals, flights and hotels, newest first. Free data and data the viewer
+   * already bought show their content; the rest stays locked behind x402.
+   */
+  market(viewer?: UserRow) {
+    const bought = new Set(viewer
+      ? this.db.all<{ listing_id: string }>("SELECT DISTINCT listing_id FROM deliveries WHERE buyer_user_id = ?", viewer.id).map(d => d.listing_id)
+      : []);
+    return this.db.all<ListingWithUploader>(
+      `SELECT ${WITH_UPLOADER} WHERE l.category IN (${MARKET_CATEGORIES.map(() => "?").join(", ")}) ORDER BY l.created_at DESC`, ...MARKET_CATEGORIES)
+      .map(l => {
+        const free = this.isFree(l);
+        const unlocked = free || bought.has(l.id);
+        return {
+          id: l.id, category: l.category, title: l.title, price: fromUnits(l.price_units), free, unlocked,
+          data: unlocked ? JSON.parse(l.payload_json) as Record<string, unknown> : null,
+          uploadedAt: new Date(l.created_at).toISOString(), uploader: this.uploaderView(l),
+        };
+      });
+  }
+
+  isFree(listing: Pick<ListingRow, "price_units">) { return BigInt(listing.price_units) === 0n; }
+
+  listing(id: string): ListingWithUploader {
+    const listing = this.db.get<ListingWithUploader>(`SELECT ${WITH_UPLOADER} WHERE l.id = ?`, id);
     if (!listing) throw new HttpError(404, `No listing ${id}`);
     return listing;
   }
 
+  private uploaderView(l: ListingWithUploader) {
+    return { id: l.uploader_id, name: l.uploader_name, address: l.uploader_address, reputation: Number(l.reputation.toFixed(3)) };
+  }
+
   /** The full listing a buyer receives. */
-  publicListing(listing: ListingRow & { uploader_name: string; reputation: number }) {
+  publicListing(listing: ListingWithUploader) {
     return {
       id: listing.id, category: listing.category, subject: listing.subject, title: listing.title, data: JSON.parse(listing.payload_json),
-      publishedAt: new Date(listing.created_at).toISOString(), validated: false,
-      uploader: { id: listing.uploader_id, name: listing.uploader_name, reputation: Number(listing.reputation.toFixed(3)) },
+      publishedAt: new Date(listing.created_at).toISOString(), validated: false, free: this.isFree(listing), uploader: this.uploaderView(listing),
     };
   }
 
@@ -99,14 +128,23 @@ export class DataPlatform {
     let uploader = this.db.get<{ id: string }>("SELECT id FROM uploaders WHERE user_id = ?", user.id);
     if (!uploader) {
       uploader = { id: newId("upl") };
-      this.db.run("INSERT INTO uploaders (id, name, user_id) VALUES (?, ?, ?)", uploader.id, user.name, user.id);
+      this.db.run("INSERT INTO uploaders (id, name, user_id, wallet_address) VALUES (?, ?, ?, ?)", uploader.id, user.name, user.id, user.wallet_address ?? user.wallet_id);
     }
     const subject = subjectOf(category, data);
     const id = newId(category.slice(0, 3));
     const title = String(input.title ?? "").trim().slice(0, 120) || `${category} ${subject}`;
     this.db.run("INSERT INTO listings (id, category, subject, title, payload_json, uploader_id, price_units, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       id, category, subject, title, JSON.stringify(data), uploader.id, price.toString(), Date.now());
-    return { id, category, subject, title, price: fromUnits(price), validated: false };
+    const archived = this.archiveOverflow(uploader.id);
+    return { id, category, subject, title, price: fromUnits(price), validated: false, archived };
+  }
+
+  /** Keeps a seller at MAX_ACTIVE_LISTINGS current (paid) listings: the oldest beyond it become free (archived, not deleted). */
+  private archiveOverflow(uploaderId: string): string[] {
+    const overflow = this.db.all<{ id: string }>(
+      "SELECT id FROM listings WHERE uploader_id = ? AND price_units != '0' ORDER BY created_at DESC LIMIT -1 OFFSET ?", uploaderId, this.config.maxActiveListings);
+    for (const { id } of overflow) this.db.run("UPDATE listings SET price_units = '0' WHERE id = ?", id);
+    return overflow.map(o => o.id);
   }
 
   deliveryHash(request: Record<string, unknown>, listing: Record<string, unknown>) {

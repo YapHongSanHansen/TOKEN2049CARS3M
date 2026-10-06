@@ -27,6 +27,8 @@ export interface Config {
   defaultCheckIntervalMs: number;
   /** Minimum number of past messages the user must pledge for a loan. */
   minPledgeItems: number;
+  /** A seller's current (paid) listings; uploading past it archives the oldest, which becomes free. */
+  maxActiveListings: number;
   starter: { ada: bigint; usdm: bigint };
   l1Confirmations: number;
   bundleKey: Buffer;
@@ -86,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     loanDeadlineMs: num(env, "LOAN_DEADLINE_SECONDS", 300) * 1000,
     defaultCheckIntervalMs: num(env, "DEFAULT_CHECK_INTERVAL_MS", 10_000),
     minPledgeItems: num(env, "MIN_PLEDGE_ITEMS", 3),
+    maxActiveListings: num(env, "MAX_ACTIVE_LISTINGS", 9),
     starter: {
       ada: toUnits(str(env, "STARTER_ADA", mode === "preprod" ? "5" : "100")),
       usdm: toUnits(str(env, "STARTER_USDM", "0.05")),

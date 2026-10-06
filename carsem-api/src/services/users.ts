@@ -1,13 +1,14 @@
 /**
  * Accounts and onboarding: the gate every AI app passes through before using CARSEM.
  *
- *   start      → an account and its API key (works only for onboarding until the gate is passed)
+ *   wallet     → connect Lace (or any CIP-30 wallet) and sign a CARSEM message (CIP-8): one wallet =
+ *                one account. Each sign-in returns a CARSEM key (works only for onboarding until the gate is passed)
  *   KYC        → mock KYC (demo); one identity document = one account
  *   consent    → "allow my agent to borrow against my redacted chats" (required to continue)
  *   complete   → the user's ONE agent + hosted wallet (via the gateway), starter funds,
  *                a user DID and a signed "KYC verified" credential
  */
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { LOVELACE, fromUnits } from "@carsem/shared";
 import type { Chain } from "../chain/index.js";
 import type { Config } from "../config.js";
@@ -16,9 +17,11 @@ import { HttpError, newId } from "./errors.js";
 import type { GatewayClient } from "./gateway.js";
 import type { Issuer } from "./identity.js";
 import { mockKyc, type KycOutcome } from "./kyc.js";
+import { parseWalletAddress, type ProvenWallet } from "./wallet.js";
 
 export interface UserRow {
-  id: string; name: string; api_key_hash: string; did: string | null;
+  id: string; name: string; did: string | null;
+  wallet_id: string; wallet_address: string | null; wallet_name: string | null; wallet_public_key: string | null; wallet_verified_at: number;
   kyc_status: "none" | "pending" | "verified" | "rejected"; kyc_provider: string | null; kyc_ref: string | null;
   kyc_subject_hash: string | null; kyc_at: number | null; vc_jwt: string | null; vc_revoked: number;
   earnings_units: string; onboarded_at: number | null; created_at: number;
@@ -37,14 +40,34 @@ export class Users {
 
   get onboardingUrl() { return `${this.config.frontendUrl}/#start`; }
 
-  /** Opens an account. The key is returned once; only its hash is stored. */
-  start(name: string, options: { id?: string; apiKey?: string } = {}) {
-    if (!name?.trim()) throw new HttpError(400, "name is required");
-    const apiKey = options.apiKey ?? `csm_${randomBytes(24).toString("base64url")}`;
-    const id = options.id ?? newId("usr");
-    this.db.run("INSERT INTO users (id, name, api_key_hash, created_at) VALUES (?, ?, ?, ?)", id, name.trim().slice(0, 80), keyHash(apiKey), Date.now());
-    return { user: this.get(id), apiKey };
+  /**
+   * Signs in with a wallet the user just proved they own: opens the account on first use, and
+   * re-opens the same account afterwards. Returns a new CARSEM key (shown once; only its hash is
+   * stored). Keys already given to AI apps keep working.
+   */
+  signInWithWallet(wallet: ProvenWallet, input: { name?: unknown; walletName?: unknown; paymentAddress?: unknown }) {
+    const walletName = String(input.walletName ?? "").trim().toLowerCase().replace(/[^a-z0-9 _-]/g, "").slice(0, 40) || null;
+    let payout = wallet.kind === "stake" ? null : wallet.bech32;
+    if (typeof input.paymentAddress === "string" && input.paymentAddress) {
+      try { const p = parseWalletAddress(input.paymentAddress); if (p.kind !== "stake") payout = p.bech32; } catch { /* keep the proven one */ }
+    }
+    const now = Date.now();
+    const existing = this.db.get<UserRow>("SELECT * FROM users WHERE wallet_id = ?", wallet.bech32);
+    const id = existing?.id ?? newId("usr");
+    if (existing) {
+      this.db.run("UPDATE users SET wallet_address = COALESCE(?, wallet_address), wallet_name = COALESCE(?, wallet_name), wallet_public_key = COALESCE(?, wallet_public_key), wallet_verified_at = ? WHERE id = ?",
+        payout, walletName, wallet.publicKey, now, id);
+    } else {
+      this.db.run("INSERT INTO users (id, name, wallet_id, wallet_address, wallet_name, wallet_public_key, wallet_verified_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        id, String(input.name ?? "").trim().slice(0, 80), wallet.bech32, payout, walletName, wallet.publicKey, now, now);
+    }
+    const apiKey = `csm_${randomBytes(24).toString("base64url")}`;
+    this.db.run("INSERT INTO user_keys (key_hash, user_id, label, created_at) VALUES (?, ?, ?, ?)", keyHash(apiKey), id, `${walletName ?? "wallet"} sign-in`, now);
+    return { user: this.get(id), apiKey, returning: !!existing };
   }
+
+  /** What to call the user: their chosen name, else their wallet. */
+  displayName(user: UserRow) { return user.name || `${user.wallet_id.slice(0, 12)}…`; }
 
   get(id: string): UserRow {
     const user = this.db.get<UserRow>("SELECT * FROM users WHERE id = ?", id);
@@ -56,9 +79,8 @@ export class Users {
   authenticate(authorization: string | undefined): UserRow {
     const key = authorization?.replace(/^Bearer\s+/i, "").trim();
     if (!key) throw new HttpError(401, "Missing CARSEM key (Authorization: Bearer csm_…). Get one at the onboarding page.");
-    const hash = keyHash(key);
-    const user = this.db.get<UserRow>("SELECT * FROM users WHERE api_key_hash = ?", hash);
-    if (!user || !timingSafeEqual(Buffer.from(user.api_key_hash, "hex"), Buffer.from(hash, "hex"))) throw new HttpError(401, "Unknown CARSEM key");
+    const user = this.db.get<UserRow>("SELECT users.* FROM user_keys JOIN users ON users.id = user_keys.user_id WHERE user_keys.key_hash = ?", keyHash(key));
+    if (!user) throw new HttpError(401, "Unknown CARSEM key");
     return user;
   }
 
@@ -90,8 +112,8 @@ export class Users {
     }
     const other = this.db.get<{ id: string }>("SELECT id FROM users WHERE kyc_subject_hash = ? AND id != ?", outcome.subjectHash, user.id);
     if (other) throw new HttpError(409, "This identity already has a CARSEM account. One person gets one account and one platform wallet.", "duplicate_identity");
-    this.db.run("UPDATE users SET kyc_status = 'verified', kyc_provider = ?, kyc_ref = ?, kyc_subject_hash = ?, kyc_at = ? WHERE id = ?",
-      provider, outcome.ref, outcome.subjectHash, Date.now(), user.id);
+    this.db.run("UPDATE users SET kyc_status = 'verified', kyc_provider = ?, kyc_ref = ?, kyc_subject_hash = ?, kyc_at = ?, name = CASE WHEN name = '' THEN ? ELSE name END WHERE id = ?",
+      provider, outcome.ref, outcome.subjectHash, Date.now(), outcome.firstName ?? "", user.id);
     return { status: "verified" as const };
   }
 
@@ -148,7 +170,7 @@ export class Users {
       const { address } = await this.gateway.createWallet(user.id);
       const agentId = newId("agt");
       this.db.run("INSERT INTO agents (id, user_id, name, address, did, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        agentId, user.id, `${user.name}'s agent`, address, this.issuer.agentDid(agentId), Date.now());
+        agentId, user.id, `${this.displayName(user)}'s agent`, address, this.issuer.agentDid(agentId), Date.now());
       agent = this.agentOf(user.id)!;
       // Starter funds: tADA for fees and the 0.05 USDM that is not enough for a 5 USDM paywall.
       await this.chain.sendAssets("treasury", address, { [LOVELACE]: this.config.starter.ada, [this.config.usdmAsset]: this.config.starter.usdm },
@@ -158,6 +180,7 @@ export class Users {
       const did = this.issuer.userDid(user.id);
       const { jwt } = this.issuer.issueKycCredential({
         userId: user.id, userDid: did, agentDid: agent.did, walletAddress: agent.address,
+        ownerWallet: { id: user.wallet_id, address: user.wallet_address, provenAt: user.wallet_verified_at },
         provider: "mock", level: "demo-basic", verifiedAt: user.kyc_at ?? Date.now(),
       });
       this.db.run("UPDATE users SET did = ?, vc_jwt = ?, vc_revoked = 0, onboarded_at = COALESCE(onboarded_at, ?) WHERE id = ?", did, jwt, Date.now(), user.id);
@@ -170,9 +193,14 @@ export class Users {
     const agent = this.agentOf(user.id);
     return {
       id: user.id,
-      name: user.name,
+      name: this.displayName(user),
       onboarded: !!user.onboarded_at,
-      steps: { kyc: user.kyc_status, consent: this.consentOf(user.id)?.status ?? "none", agent: !!agent },
+      wallet: {
+        name: user.wallet_name, id: user.wallet_id, payoutAddress: user.wallet_address,
+        proof: "CIP-30 signData (CIP-8 COSE_Sign1)", verifiedAt: new Date(user.wallet_verified_at).toISOString(),
+        explorerUrl: user.wallet_id.startsWith("stake") ? `https://preprod.cardanoscan.io/stakekey/${user.wallet_id}` : `https://preprod.cardanoscan.io/address/${user.wallet_id}`,
+      },
+      steps: { wallet: "verified", kyc: user.kyc_status, consent: this.consentOf(user.id)?.status ?? "none", agent: !!agent },
       kyc: { status: user.kyc_status, provider: "mock (demo)", verifiedAt: user.kyc_at && new Date(user.kyc_at).toISOString() },
       identity: user.did ? {
         did: user.did,

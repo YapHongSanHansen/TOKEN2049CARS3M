@@ -39,6 +39,8 @@ const PLACE_WORDS = new Set(["Singapore", "Malaysia", "Bali", "Bangkok", "Tokyo"
 const WITHHELD: Array<[string, RegExp]> = [
   ["health", /\b(diagnos\w*|therap(y|ist)|medication|prescription|cancer|depress\w*|anxiety|pregnan\w*|hiv|clinic|hospital|surgery)\b/i],
   ["credentials", /\b(password|passcode|pin code|seed phrase|mnemonic|private key|otp)\b/i],
+  // API keys and tokens: CARSEM keys, OpenAI/Anthropic/Stripe, GitHub, Slack, AWS, bearer headers, .env lines.
+  ["credentials", /\bcsm_[\w-]{16,}|\b(?:sk|pk|rk)[-_](?:live_|test_|proj-|ant-)?[\w-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bxox[abprs]-[\w-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bBearer\s+[\w.~+/-]{16,}|\b[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|SECRET|MNEMONIC|PASSWORD)=\S+|\b(?:api[ _-]?key|secret key|access token|auth token)\b/i],
   ["religion_politics", /\b(church|mosque|temple|synagogue|vote[ds]? for|election)\b/i],
 ];
 
