@@ -26,6 +26,15 @@ const SAFE_WORDS = new Set([
   "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December",
 ]);
 
+/** Common given names (English, Malay, Chinese, Indian) — masked wherever they appear. */
+const FIRST_NAMES = new Set(`Aaron Abdul Adam Adrian Ahmad Aisha Alex Alice Alicia Aliya Amanda Amir Amy Andrew Angela Anna Anthony Arif Arjun Ashley Aziz
+  Ben Benjamin Bob Brandon Brian Carol Caroline Charles Charlotte Chloe Chris Christina Christopher Daniel David Deepak Diana Dylan Edward Eleanor Elizabeth Emily Emma Eric Ethan Eve Faizal Farah Fatimah Grace Hafiz
+  Hannah Hana Harry Hassan Henry Ian Isaac Isabella Ismail Jack Jacob James Jane Jason Jasmine Jennifer Jessica John Jonathan Joseph Joshua Julia Justin Karen Kate Kevin Kumar Laura Lauren Lily Linda Lisa
+  Lucas Lucy Mark Mary Matthew Mei Melissa Michael Michelle Ming Mohamed Mohammed Muhammad Nadia Natalie Nicholas Nicole Noah Nur Nurul Olivia Omar Patrick Paul Peter Priya Rachel Rahul Raj Rajesh Ravi Rebecca
+  Richard Robert Ryan Sam Samantha Sarah Sean Siti Sophia Steven Susan Thomas Tim Timothy Tom Victoria Vincent Wei William Yusuf Zara Zoe`.split(/\s+/));
+/** Proper nouns that are places, so their possessive ("Singapore's") is kept. */
+const PLACE_WORDS = new Set(["Singapore", "Malaysia", "Bali", "Bangkok", "Tokyo", "London", "Penang", "Jakarta", "Geylang", "Cardano", "Masumi", "Minswap"]);
+
 // Sensitive categories are never sold, not even redacted.
 const WITHHELD: Array<[string, RegExp]> = [
   ["health", /\b(diagnos\w*|therap(y|ist)|medication|prescription|cancer|depress\w*|anxiety|pregnan\w*|hiv|clinic|hospital|surgery)\b/i],
@@ -73,22 +82,22 @@ export function redactMessage(text: string, replacements: Record<string, number>
   for (const [kind, re, token] of PATTERNS) {
     out = out.replace(re, () => { count(replacements, kind); return token; });
   }
-  // "my girlfriend Sarah's", "my mom's", "our landlord" -> [PERSON]
+  // People, not places or products: "Kuala Lumpur", "Singapore Geylang" and "Pokemon Pack"
+  // are what the data is worth; names of people are what must go.
+  const name = (match: string) => { count(replacements, "name"); return match; };
+  // 1. Relationships: "my girlfriend Sarah's", "my mom", "our landlord John" -> [PERSON]
   const relation = RELATIONS.map(r => r.replace(/[-\s]/g, "[-\\s]?")).join("|");
   out = out.replace(new RegExp(`\\b(?:my|our|his|her|their)\\s+(?:${relation})(?:\\s+[A-Z][a-z]+)?(?:'s)?\\b`, "gi"), () => { count(replacements, "person"); return "[PERSON]"; });
-  // Remaining capitalised words that do not start a sentence: assume names/places.
-  out = out.replace(/(^|[.!?]\s+|\s)([A-Z][a-z]+(?:'s)?)\b/g, (match, prefix: string, word: string) => {
-    const sentenceStart = prefix === "" || /[.!?]\s+$/.test(prefix);
-    if (sentenceStart || SAFE_WORDS.has(word) || SAFE_WORDS.has(word.replace(/'s$/, ""))) return match;
-    count(replacements, "name");
-    return `${prefix}[NAME]`;
-  });
-  // Sentence-initial names are caught only when followed by a possessive or verb-ish cue.
-  out = out.replace(/^([A-Z][a-z]+)('s|\s+(?:said|says|wants|told|asked|is|was))\b/g, (match, word: string, rest: string) => {
-    if (SAFE_WORDS.has(word) || ["My", "The", "Our", "Can", "Should", "What", "When", "Where", "How", "Why", "Need", "Please", "Remind", "Find", "Book", "Buy", "Get", "Help"].includes(word)) return match;
-    count(replacements, "name");
-    return `[NAME]${rest}`;
-  });
+  // 2. People you interact with: "call Sarah", "email Ahmad", "meet Wei Ming".
+  // The verb is case-insensitive; the name must be Capitalised (so "call at 5pm" is untouched).
+  const verbs = ["call", "text", "message", "email", "e-mail", "tell", "ask", "meet", "invite", "pay", "send", "ping", "dm", "thank"]
+    .map(v => `[${v[0].toUpperCase()}${v[0]}]${v.slice(1)}`).join("|");
+  out = out.replace(new RegExp(`\\b(${verbs})\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)\\b`, "g"), (match, verb: string, who: string) =>
+    SAFE_WORDS.has(who.split(" ")[0]) || PLACE_WORDS.has(who.split(" ")[0]) ? match : name(`${verb} [NAME]`));
+  // 3. Possessives that are not places or things we know: "Sarah's".
+  out = out.replace(/\b([A-Z][a-z]+)'s\b/g, (match, word: string) => (SAFE_WORDS.has(word) || PLACE_WORDS.has(word) ? match : name("[NAME]")));
+  // 4. Common first names anywhere.
+  out = out.replace(/\b([A-Z][a-z]+)\b/g, (match, word: string) => (FIRST_NAMES.has(word) ? name("[NAME]") : match));
   return { redacted: out.replace(/\s{2,}/g, " ").trim(), intents };
 }
 

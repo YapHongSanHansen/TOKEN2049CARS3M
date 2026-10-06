@@ -2,140 +2,99 @@
 
 > Your agent never stops at a paywall. It borrows against your data, earns while you sleep, and repays itself.
 
-TOKEN2049 · Cardano agentic commerce (x402 + Masumi) · Cardano **preprod** · tUSDM + tADA
+TOKEN2049 · Cardano agentic commerce (x402 + Masumi) · Cardano **preprod** · USDM + tADA
 
-This repo holds the x402 seller (trading signals + data marketplace),
-**CARSEM Lending**, the autonomous **agent**, and the **web UI**. See [CARSEM_BUILD_PLAN.md](CARSEM_BUILD_PLAN.md) for the full plan.
+Users talk to **their own AI app** (Hermes, Claude Code, ChatGPT, Claude, or plain `curl`). CARSEM plugs into it over MCP. Before anything works, the user verifies with a **Masumi-compatible DID** (KYC + consent) and gets **one agent with one platform wallet**.
 
 ```
- user ── "trade MIN for me" ──▶ agent (Claude tool loop / scripted)
-                                  │ 1 GET /signals/latest ─────────────▶ carsem-api ── 402 PAYMENT-REQUIRED (5 tUSDM)
-                                  │ 2 balance 0.05 < 5
-                                  │ 3 POST /loans (agent key) ─────────▶ CARSEM Lending ── treasury → agent 5 tUSDM (on chain)
-                                  │                                        collateral = user's redacted chat bundle
-                                  │ 4 retry + PAYMENT-SIGNATURE ───────▶ x402 middleware ──▶ facilitator verify/settle
-                                  │    ◀── signal + delivery hash          (Java cardano-x402-facilitator on preprod)
-                                  │                                        delivery hash → label-674 tx (decision log)
-                                  │ 5 POST /dex/swap ──────────────────▶ DEX simulator (Minswap stand-in) → profit in tUSDM
-                                  │ 6 POST /loans/:id/repay (x402) ────▶ loan repaid → collateral released
-                                  ▼
-                 deadline passes, not repaid ──▶ loan defaulted → bundle listed → enterprises buy it over x402
+ User ─ chats in Hermes / Claude Code / ChatGPT / Claude / curl
+   │      "Find me trading signals on CARSEM, I want pocket money from Cardano DEX trades"
+   ▼
+ Onboarding gate (once)  KYC (mock) → DID + "KYC verified" credential → consent → ONE agent + ONE wallet (0.05 USDM)
+   │
+   ▼
+ AI Agent ── MCP ──▶ CARSEM agent gateway (holds the user's wallet, signs x402)
+   │ 1 search CARSEM ─────────────────────▶ CARSEM platform: signals · flight · hotel · product prices
+   │◀─ 2 x402: pay 5 USDM ─────────────────    (uploaded by users, not validated, reputation over time)
+   │ 3 check balance: 0.05 < 5
+   │ 4 collateral borrowing ──────────────▶ CARSEM Lending: synced chats are redacted and LOCKED as collateral,
+   │                                         treasury pays the agent 5 USDM on chain
+   │ 5 pay 5 USDM via x402 → get data ────▶ proof of delivery: hash(request + data) logged on chain
+   │   trade the signal (DEX, simulated) → profit → repay via x402 → collateral released
+   ▼
+ Else default ─▶ the redacted chats are PUBLISHED on CARSEM: any verified user can access them for a fee,
+                 enterprises (eBay 50 · Amazon 25 · BNB 10 · Meta 5) can buy them, and they keep selling.
+ While a loan is open, enterprises may buy the locked chats privately (if the user allowed it): proceeds repay the loan.
 ```
 
-## Quick start (simulated chain, no keys needed)
+## Run it (simulated chain, no keys needed)
 
 ```sh
 npm install
 cp .env.example .env
-npm run seed -- --reset     # signals, bids, demo user + consent, demo agent with 0.05 tUSDM
-npm run demo                # carsem-api :4021 + agent service :4031 + web UI http://localhost:5173
+npm run seed -- --reset
+npm run demo        # carsem-api :4021 · agent gateway :4031 · web http://localhost:5173
 ```
 
-Open **http://localhost:5173**:
+1. Open **http://localhost:5173 → Get started**: create an account, verify (mock KYC), consent. You get your DID, credential, agent, wallet and **CARSEM key**.
+2. **Connect your AI app** (the page shows copy-paste setup for each; details in [integrations/README.md](integrations/README.md)):
+   - Hermes: add the `carsem` MCP server to a `carsem` profile.
+   - Claude Code: `claude mcp add --transport http carsem http://localhost:4031/mcp --header "Authorization: Bearer csm_…"`
+   - ChatGPT / Claude web: custom connector `https://<public gateway>/mcp/k/csm_…` (needs ngrok).
+   - curl: `curl -N http://localhost:4031/v1/ask -H "Authorization: Bearer csm_…" -H "Content-Type: application/json" -d '{"message":"Find me trading signals on CARSEM"}'`
+3. Ask for trading signals, the cheapest KL→Singapore flight, a Geylang hotel or the Pokémon 30th Anniversary pack, and watch **My agent**: every tool call and x402 payment appears live.
 
-| Tab | What it shows |
+For a quick default demo, start with `LOAN_DEADLINE_SECONDS=60 npm run demo`. From the terminal only: `npm run demo:user -- --save`, then `npm run ask -- "Trade MIN for me"`.
+
+**Simulated vs real.** Everything above the chain is real: the official x402 SDKs on both sides, offers, signed payloads, verify/settle, receipts, the lending rules, DIDs and signed credentials, redaction and the MCP server. Only the chain is replaced, by a local signed ledger, until you switch to `CHAIN_MODE=preprod`. The DEX trade is a labelled simulated fill, and KYC is a labelled mock.
+
+## Where the data comes from ("the AI agent has the user's information")
+
+Nothing is synced before the user consents, and everything is redacted (people, dates, phones, emails, addresses and accounts removed; health topics and credentials withheld). Places and products are kept, because that's what the data is worth. When a loan starts, everything synced so far is sealed (encrypted) as that loan's collateral.
+
+| Source | How |
 |---|---|
-| **Agent** | Chat (left), the agent's live tool calls and x402 messages (middle), wallet + loan with deadline countdown (right). Demo controls force a win or loss, top up the agent, or reset it to 0.05 tUSDM |
-| **Your data** | Opt-in toggle, live before/after redaction, revoke, bundle status and data earnings |
-| **CARSEM** | Treasury, loans, defaults, uploader reputation, activity feed with tx links |
-| **Data market** | Listed bundles. Buy as eBay, Amazon, BNB or Meta over x402; proceeds repay the loan |
-
-For a short demo, start with a shorter deadline: `LOAN_DEADLINE_SECONDS=90 npm run demo`.
-
-Or drive it from the terminal while the API runs:
-
-```sh
-npm run agent -- "Get me a trading signal for MIN and trade it" --outcome win    # green path
-npm run seed                                                                      # agent back to 0.05 tUSDM
-npm run agent -- "Trade MIN for me" --outcome loss                                # red path: asks for a top-up
-# 5 minutes later (LOAN_DEADLINE_SECONDS) the loan defaults and the bundle is listed:
-curl localhost:4021/market/bundles
-npm run enterprise:buy -- --enterprise Amazon
-```
-
-`--outcome` forces the simulated DEX result for the demo. Without it, the result is a draw weighted by the signal's confidence.
-
-**What "simulated" means.** Everything above the chain is real: the official `@x402/core`,
-`@x402/cardano` and `@x402/express` SDKs on both sides, `402` offers, signed payment
-payloads, facilitator verify/settle, `PAYMENT-RESPONSE` receipts, idempotent paid
-operations, the lending ledger, and redaction. Only the chain is replaced, by a
-SQLite ledger that settles ed25519-signed transfers and charges a fee in tADA.
-Explorer links point to `GET /sim/txs/:hash`. Set `CHAIN_MODE=preprod` for the real chain.
-
-## Real preprod
-
-1. **Blockfrost**: create a *Cardano preprod* project and set `BLOCKFROST_PROJECT_ID` in `.env`.
-2. **Wallets**: `npm run wallets:new` writes three fresh wallets into `.env` (treasury, agent, enterprise) and prints the addresses to fund. Fund them with tADA from the [faucet](https://docs.cardano.org/cardano-testnets/tools/faucet).
-3. **tUSDM**: get Masumi tUSDM (policy `16a55b2a…`) from the [Masumi dispenser](https://dispenser.masumi.network) for the treasury (loans) and the enterprise. Leave the agent with **0.05 tUSDM**. `USDM_ASSET` selects the token.
-4. **Facilitator**: start Docker Desktop, then `npm run facilitator:up` builds and runs the [Java cardano-x402-facilitator](https://github.com/cardano-foundation/cardano-x402-facilitator) on :4022. See [facilitator/README.md](facilitator/README.md).
-5. Set `CHAIN_MODE=preprod` and a real `BUNDLE_KEY`. Then `npm run preflight` checks everything above and tells you what's missing.
-6. `npm run seed -- --reset`, then `npm run demo`.
-
-On preprod, loan disbursements, x402 payments, DEX profit payouts and decision logs
-are real transactions with cardanoscan links. Each treasury transaction waits for
-confirmation (about 20 s per block), so a full run takes a few minutes.
+| The AI app itself | the `sync_context` tool: the AI shares what it knows from the chat and its memory when borrowing needs it |
+| Hermes | `npm run sync -- --source hermes --profile carsem --yes` (memories + your messages, redacted locally) |
+| Claude Code | `npm run sync -- --source claude-code --yes` |
+| ChatGPT / Claude | export your data, then `npm run sync -- --source chatgpt-export --path conversations.json --yes` |
 
 ## Packages
 
 | Path | What |
 |---|---|
-| `carsem-api/` | Express API: x402 paywall, signals, lending, consent + redaction, data market, DEX simulator, Masumi MIP-003 endpoints |
-| `agent/` | Agent wallet (x402 `ClientCardanoSigner`), x402 client, tools, Claude Tool Runner brain, CLI and HTTP service |
-| `shared/` | Units, canonical JSON, and the simulated chain's signed transaction format |
-| `frontend/` | Web UI (Vite + React): agent chat + activity, opt-in/redaction, CARSEM dashboard, data market |
-| `facilitator/` | Scripts that run the Java facilitator via Docker |
-| `tests/` | End-to-end tests on the simulated chain |
+| `carsem-api/` | The platform: onboarding gate (KYC, DID, credential, consent), data platform + x402 paywall, sync, lending, market, DEX simulator, Masumi MIP-003 endpoints |
+| `agent/` | The agent gateway: hosted wallets (one per user, encrypted), the CARSEM MCP server, curl API, OpenAI/scripted brain, `sync` / `ask` / `tool` / `demo:user` CLIs |
+| `frontend/` | Web: Get started (gate + connect), My agent (live activity), CARSEM dashboard, Market |
+| `shared/` | Units, redaction, encryption, simulated-chain transactions |
+| `integrations/` | How to connect Hermes, Claude Code, ChatGPT/Claude, curl; a `carsem` skill |
+| `facilitator/` | Runs the Java cardano-x402-facilitator (Docker) for preprod |
+| `tests/` | End-to-end tests with a real MCP client (`npm test`) |
 
-## carsem-api endpoints
+## Real preprod
 
-| | Endpoint | Notes |
-|---|---|---|
-| **x402** | `GET /signals/latest?token=MIN` | 5 tUSDM. Returns the signal + delivery hash; the hash is logged on chain (label 674) |
-| **x402** | `POST /loans/:id/repay` | price = outstanding (principal + 2% fee); releases the collateral |
-| **x402** | `POST /market/bundles/:id/buy?bid=ebay` | price = the enterprise's bid; proceeds repay the open loan, and the surplus goes to the data owner |
-| | `POST /loans` `{agentId, amount}` | `Authorization: Bearer <agent key>`; checks identity, consent, and one loan per user |
-| | `GET /loans`, `GET /loans/:id`, `GET /loans/terms`, `POST /admin/check-defaults` | |
-| | `POST /redact/preview`, `POST/GET/DELETE /users/:id/consent` | opt-in, before/after redaction, revoke |
-| | `POST /users`, `POST /users/:id/agents`, `GET /agents/:id` | agent registration returns its API key once |
-| | `GET /signals/tokens`, `GET /signals/uploaders`, `GET /signals/deliveries/:id` | reputation updates from trade outcomes |
-| | `GET /market/bids`, `GET /market/bundles`, `GET /market/sales` | seeded bids: eBay 50 / Amazon 25 / BNB 10 / Meta 5 |
-| | `POST /dex/swap`, `GET /dex/trades` | Minswap stand-in, `simulated: true` |
-| Masumi | `GET /availability`, `GET /input_schema`, `POST /start_job`, `GET /status?job_id=` | MIP-003; a job is paid at the x402 URL `start_job` returns |
-| | `GET /health`, `GET /activity`, `GET /chain/balances/:address` | |
-| sim only | `GET /sim/txs/:hash`, `GET /sim/balances/:address`, `POST /sim/faucet`, `POST /sim/set-usdm` | |
+Put your keys in **`.env.local`** (gitignored; it already holds the generated platform wallets and secrets), then:
 
-## Agent
+1. `BLOCKFROST_PROJECT_ID`: a *Cardano preprod* project at blockfrost.io.
+2. `npm run wallets:new` prints the treasury and enterprise addresses. Fund them with tADA from the [faucet](https://docs.cardano.org/cardano-testnets/tools/faucet) and tUSDM from the [Masumi dispenser](https://dispenser.masumi.network). Users' agent wallets are created and funded by CARSEM.
+3. With Docker running: `npm run facilitator:up` (the [Java x402 facilitator](https://github.com/cardano-foundation/cardano-x402-facilitator)).
+4. `CHAIN_MODE=preprod` in `.env`, then `npm run preflight`. It lists anything missing.
+5. `npm run seed -- --reset && npm run demo`.
 
-- `npm run agent -- "<message>" [--brain claude|scripted] [--outcome win|loss]` prints every step, including each x402 message.
-- `npm run agent:buy [-- MIN] [--topup]` buys one signal with no browser and no LLM.
-- `npm run agent:serve` runs the HTTP service for the chat UI on :4031: `POST /runs`, `GET /runs/:id`, `GET /runs/:id/events` (SSE), and `GET /wallet`.
-- **Brain**: when an Anthropic credential is present (`ANTHROPIC_API_KEY`), Claude (`AGENT_MODEL`, default `claude-opus-5`) drives the tools through the SDK Tool Runner, with server-side refusal fallbacks (`fallbacks: "default"`). Without a credential, a scripted planner runs the same policy: buy → if short, borrow the price → buy → trade → repay if the balance covers principal + fee, otherwise ask the user to top up.
+For ChatGPT / Claude web connectors and Masumi registry registration, CARSEM needs a public URL: set `NGROK_AUTHTOKEN` and `NGROK_DOMAIN`.
 
-## Tests
+## Status
 
-```sh
-npm run typecheck
-npm test     # green path, red path → default → enterprise recovery, sale-while-open auto-repay,
-             # replay protection, lending rules, MIP-003 job, redaction
-```
-
-## Status vs the build plan
-
-| Step | State |
+| Drawing | State |
 |---|---|
-| 1 Wallets / Blockfrost | manual; see "Real preprod" |
-| 2 x402 demo flow | built in (official SDKs + Java facilitator) |
-| 3 Masumi | MIP-003 endpoints done; registry registration still to do (needs a public URL) |
-| 4 Signal marketplace | done: seed, x402 paywall, delivery hash decision log, reputation |
-| 5 Agent wallet + x402 client | done (`agent:buy`) |
-| 6 CARSEM Lending | done: borrow → repay, borrow → default, 5-min deadline |
-| 7 Redaction + consent | done: opt-in, revoke, live before/after |
-| 8 Agent brain | done (Claude Tool Runner + scripted fallback) |
-| 9 DEX trade | **simulated fill**; real `@minswap/sdk` swap to do |
-| 10 Enterprise market | done: sales repay open loans; after a default they cover the debt and the surplus goes to the owner |
-| 11 Frontend | done (`frontend/`, Vite + React) |
+| Chat in the user's own AI app (Hermes, Claude Code, ChatGPT, Claude, curl) | done: MCP server + curl API |
+| Masumi DIDs / verifiable credentials, KYC, one platform wallet | done: W3C DIDs + signed KYC credential (mock KYC), one identity → one account → one wallet; **Masumi registry registration needs the public URL** |
+| 1–3 search, x402 402, balance 0.05 < 5 | done |
+| 4 collateral borrowing, collateral locked | done (locked by CARSEM's ledger; an Aiken loan contract is next) |
+| 5 pay via x402 → data; decision logging → proof of delivery | done: hash logged on chain; **Masumi escrow + Masumi's decision log need preprod + registry** |
+| Signals or flight/hotel prices, user uploads, reputation | done |
+| Else default: published for all users for a fee, keeps selling | done |
+| Enterprises buy data (private while a loan is open) | done |
+| Real Cardano preprod | ready, needs your keys |
 
-Known gaps: payments use the x402 `default` (direct) transfer method, not Masumi
-escrow (`masumi`), which needs the seller registered on the Masumi registry. The
-loan ledger is off chain; an Aiken loan validator is a stretch goal. Paid-operation
-idempotency records are in memory, so a restart forgets in-flight payments.
+Tests: `npm run typecheck && npm test`.

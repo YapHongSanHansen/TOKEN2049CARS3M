@@ -5,33 +5,33 @@
  */
 import { LOVELACE, fromUnits, toUnits } from "@carsem/shared";
 import { api } from "./api.js";
-import type { AgentConfig } from "./config.js";
+import type { GatewayConfig } from "./config.js";
 import { preprodWallet, simWallet, type AgentWallet } from "./wallet.js";
 import { paidFetch, type X402Step } from "./x402Client.js";
 
-interface Listing { id: string; status: string; reason: string; loan?: { id: string; status: string; outstanding: string }; offers: Array<{ bidId: string; enterprise: string; price: number }> }
+interface Listing { id: string; status: string; reason: string; loan?: { id: string; status: string; outstanding: string }; enterpriseOffers: Array<{ bidId: string; enterprise: string; price: number }> }
 
-export function enterpriseWallet(config: AgentConfig, enterprise: string): AgentWallet {
+export function enterpriseWallet(config: GatewayConfig, enterprise: string): AgentWallet {
   return config.mode === "preprod"
     ? preprodWallet(process.env.ENTERPRISE_MNEMONIC?.trim() ?? "", config.preprod.blockfrost)
     : simWallet(config.apiUrl, `enterprise-${enterprise.toLowerCase()}`);
 }
 
-export async function enterpriseBalance(config: AgentConfig, enterprise: string) {
+export async function enterpriseBalance(config: GatewayConfig, enterprise: string) {
   const wallet = enterpriseWallet(config, enterprise);
   const { usdmAsset } = await api<{ usdmAsset: string }>(config.apiUrl, "/health");
   const balances = await wallet.balances();
   return { enterprise, address: wallet.address, tUSDM: fromUnits(balances[usdmAsset] ?? 0n), tADA: fromUnits(balances[LOVELACE] ?? 0n) };
 }
 
-export async function buyBundle(config: AgentConfig, input: { enterprise: string; bundleId?: string; onStep?: (step: X402Step) => void }) {
+export async function buyBundle(config: GatewayConfig, input: { enterprise: string; bundleId?: string; onStep?: (step: X402Step) => void }) {
   const wallet = enterpriseWallet(config, input.enterprise);
   const { usdmAsset } = await api<{ usdmAsset: string }>(config.apiUrl, "/health");
   const listings = await api<Listing[]>(config.apiUrl, "/market/bundles");
   const matches = (o: { enterprise: string }) => o.enterprise.toLowerCase() === input.enterprise.toLowerCase();
-  const bundle = listings.find(l => (input.bundleId ? l.id === input.bundleId : true) && l.offers.some(matches));
+  const bundle = listings.find(l => (input.bundleId ? l.id === input.bundleId : true) && l.enterpriseOffers.some(matches));
   if (!bundle) throw new Error(`No bundle on the market that ${input.enterprise} can buy${input.bundleId ? ` (bundle ${input.bundleId})` : ""}.`);
-  const offer = bundle.offers.find(matches)!;
+  const offer = bundle.enterpriseOffers.find(matches)!;
   const loanBefore = bundle.loan;
 
   const result = await paidFetch<any>(`${config.apiUrl}/market/bundles/${bundle.id}/buy?bid=${offer.bidId}`, {

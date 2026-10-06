@@ -1,218 +1,314 @@
 /**
- * End-to-end on the simulated chain: real HTTP, real x402 SDK on both sides,
- * real carsem-api, the agent's own tools and scripted brain.
+ * End-to-end on the simulated chain: real carsem-api, real agent gateway, a real
+ * MCP client (what Hermes / Claude Code / ChatGPT use), the official x402 SDK.
  */
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { after, describe, it } from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ExactCardanoScheme } from "@x402/cardano/exact/client";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
-import { NETWORK, toUnits } from "@carsem/shared";
-import { runAgent } from "../agent/src/brain.js";
-import type { AgentConfig } from "../agent/src/config.js";
-import { AgentTools, type AgentEvent } from "../agent/src/tools.js";
+import { NETWORK, SimWallet, redactMessage, toUnits } from "@carsem/shared";
+import type { GatewayConfig } from "../agent/src/config.js";
+import { Custody } from "../agent/src/custody.js";
+import { createGateway } from "../agent/src/gateway.js";
 import { simWallet } from "../agent/src/wallet.js";
 import { paidFetch } from "../agent/src/x402Client.js";
 import { createApp } from "../carsem-api/src/app.js";
 import { loadConfig, type Config } from "../carsem-api/src/config.js";
 import { Db } from "../carsem-api/src/db.js";
-import { DEMO_USER, seedDemo } from "../carsem-api/src/demo.js";
-import { redactMessage } from "../carsem-api/src/services/redaction.js";
+import { seedDemo } from "../carsem-api/src/demo.js";
 
-const stacks: Array<() => void> = [];
-after(() => stacks.forEach(close => close()));
+const closers: Array<() => void> = [];
+after(() => closers.forEach(close => close()));
 
-async function startStack(overrides: Partial<Config> = {}) {
-  const config: Config = { ...loadConfig({ CHAIN_MODE: "simulated", DB_PATH: ":memory:", DEX_SIM_OUTCOME: "auto" }), ...overrides };
-  const db = new Db(":memory:");
-  seedDemo(db, config, { agentId: "agent-demo" });
-  const { app, ctx } = await createApp(config, { db });
+async function listen(app: { listen: (port: number, host: string) => import("node:http").Server }) {
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  config.publicUrl = url; // links the API hands out must point at this test server
-  const agentConfig: AgentConfig = {
-    mode: "simulated", apiUrl: url, agentId: "agent-demo", agentKey: config.demoAgentKey, maxPayment: toUnits("60"), tradeSizeAda: 400,
-    port: 0, anthropicConfigured: false, model: "", sim: { agentSeed: config.sim.agentSeed }, preprod: { mnemonic: "", blockfrost: { baseUrl: "", projectId: "" } },
-  };
-  const wallet = simWallet(url, config.sim.agentSeed);
-  const close = () => { server.close(); db.close(); };
-  stacks.push(close);
-  const events: AgentEvent[] = [];
-  return { config, ctx, url, agentConfig, wallet, events, emit: (e: AgentEvent) => { events.push(e); } };
+  closers.push(() => server.close());
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-const json = async (url: string, init?: RequestInit) => {
-  const response = await fetch(url, init);
+async function startStack(overrides: Partial<Config> = {}) {
+  const config: Config = { ...loadConfig({ CHAIN_MODE: "simulated", DB_PATH: ":memory:" }), ...overrides };
+  const db = new Db(":memory:");
+  seedDemo(db, config);
+  const { app, ctx } = await createApp(config, { db });
+  const apiUrl = await listen(app);
+  config.publicUrl = apiUrl;
+  const gatewayConfig: GatewayConfig = {
+    mode: "simulated", apiUrl, port: 0, publicUrl: "", serviceToken: config.serviceToken, walletKey: Buffer.alloc(32, 7),
+    dbPath: ":memory:", maxPayment: toUnits("60"), tradeSizeAda: 400, openai: { apiKey: "", model: "" }, preprod: { blockfrost: { baseUrl: "", projectId: "" } },
+  };
+  const custody = new Custody(gatewayConfig);
+  const gatewayUrl = await listen(createGateway(gatewayConfig, custody).app);
+  gatewayConfig.publicUrl = gatewayUrl;
+  config.gatewayUrl = gatewayUrl;
+  closers.push(() => { custody.close(); db.close(); });
+  return { config, ctx, apiUrl, gatewayUrl, custody };
+}
+
+const call = async (url: string, init: { method?: string; body?: unknown; key?: string } = {}) => {
+  const response = await fetch(url, {
+    method: init.method ?? (init.body === undefined ? "GET" : "POST"),
+    headers: { "Content-Type": "application/json", ...(init.key ? { Authorization: `Bearer ${init.key}` } : {}) },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  });
   return { status: response.status, body: await response.json() as any };
 };
 
-describe("x402 paywall", () => {
-  it("answers an unpaid signal request with a v2 Cardano offer", async () => {
-    const { url, ctx, config } = await startStack();
-    const response = await fetch(`${url}/signals/latest?token=MIN`);
-    assert.equal(response.status, 402);
-    const required = decodePaymentRequiredHeader(response.headers.get("PAYMENT-REQUIRED")!);
-    assert.equal(required.x402Version, 2);
-    const [offer] = required.accepts;
-    assert.equal(offer.scheme, "exact");
-    assert.equal(offer.network, NETWORK);
-    assert.equal(offer.amount, "5000000");
-    assert.equal(offer.asset, config.usdmAsset);
-    assert.equal(offer.payTo, ctx.chain.treasuryAddress);
+let docCounter = 0;
+async function onboard(apiUrl: string, name: string, options: { doc?: string; sync?: string[]; allowSaleWhileOpen?: boolean } = {}) {
+  const { body: { apiKey } } = await call(`${apiUrl}/onboarding/start`, { body: { name } });
+  const kyc = await call(`${apiUrl}/onboarding/kyc`, { key: apiKey, body: { fullName: name, documentNumber: options.doc ?? `DOC${++docCounter}${Date.now()}`, country: "MY" } });
+  assert.equal(kyc.status, 200, JSON.stringify(kyc.body));
+  assert.equal((await call(`${apiUrl}/onboarding/consent`, { key: apiKey, body: { allowBorrowing: true, allowSaleWhileOpen: options.allowSaleWhileOpen ?? true } })).status, 200);
+  const complete = await call(`${apiUrl}/onboarding/complete`, { key: apiKey, body: {} });
+  assert.equal(complete.status, 200, JSON.stringify(complete.body));
+  if (options.sync) assert.equal((await call(`${apiUrl}/me/sync`, { key: apiKey, body: { source: "assistant", items: options.sync } })).status, 200);
+  return { key: apiKey as string, profile: complete.body };
+}
+
+async function mcp(gatewayUrl: string, key: string) {
+  const client = new Client({ name: "e2e", version: "1.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${gatewayUrl}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${key}` } } }));
+  closers.push(() => { void client.close(); });
+  return {
+    client,
+    tool: async (name: string, args: Record<string, unknown> = {}) => {
+      const result = await client.callTool({ name, arguments: args }) as { content: Array<{ text: string }> };
+      return JSON.parse(result.content[0].text);
+    },
+  };
+}
+
+const CHATS = [
+  "Cheapest flight from Kuala Lumpur to Singapore next weekend",
+  "My girlfriend's birthday is on 30th Sept, what should I buy? Budget RM 300",
+  "Cheapest hotel at Singapore Geylang",
+  "Find me trading signals, I want pocket money on Cardano DEX trades",
+];
+
+describe("onboarding gate (Masumi DID + KYC + consent)", () => {
+  it("blocks the platform until the user is verified, then issues a DID, credential and one agent wallet", async () => {
+    const { apiUrl, gatewayUrl } = await startStack();
+    const { body: { apiKey } } = await call(`${apiUrl}/onboarding/start`, { body: { name: "Bob" } });
+    const { tool } = await mcp(gatewayUrl, apiKey);
+    const status = await tool("carsem_status");
+    assert.equal(status.onboarded, false);
+    assert.match(status.next, /#start/);
+    assert.match((await tool("buy_data", { category: "signal", query: "MIN" })).error, /onboarding/i);
+    assert.equal((await call(`${apiUrl}/loans`, { key: apiKey, body: { amount: "5" } })).status, 403);
+
+    // Consent needs KYC first, and consent is required to finish.
+    assert.equal((await call(`${apiUrl}/onboarding/consent`, { key: apiKey, body: { allowBorrowing: true } })).status, 403);
+    await call(`${apiUrl}/onboarding/kyc`, { key: apiKey, body: { fullName: "Bob", documentNumber: "A1234567", country: "MY" } });
+    assert.equal((await call(`${apiUrl}/onboarding/complete`, { key: apiKey, body: {} })).status, 403);
+    assert.equal((await call(`${apiUrl}/onboarding/consent`, { key: apiKey, body: { allowBorrowing: false } })).status, 400);
+    await call(`${apiUrl}/onboarding/consent`, { key: apiKey, body: { allowBorrowing: true } });
+    const { body: profile } = await call(`${apiUrl}/onboarding/complete`, { key: apiKey, body: {} });
+    assert.equal(profile.onboarded, true);
+    assert.match(profile.identity.did, /^did:web:[^:]+:users:usr_/);
+    assert.match(profile.agent.address, /^addr_test1sim/);
+
+    // The credential verifies; a tampered one does not; the DID resolves.
+    assert.equal((await call(`${apiUrl}/credentials/verify`, { body: { jwt: profile.identity.credential.jwt } })).body.valid, true);
+    const [h, p, s] = profile.identity.credential.jwt.split(".");
+    assert.equal((await call(`${apiUrl}/credentials/verify`, { body: { jwt: `${h}.${p}.${s.slice(0, -4)}AAAA` } })).status, 400);
+    assert.equal((await call(`${apiUrl}/users/${profile.id}/did.json`)).body.id, profile.identity.did);
+
+    // Agent wallet got the starter funds: 0.05 USDM, not enough for a 5 USDM paywall.
+    const now = await tool("carsem_status");
+    assert.equal(now.onboarded, true);
+    assert.equal(now.wallet.USDM, "0.05");
   });
 
-  it("rejects unknown tokens before asking for payment", async () => {
-    const { url } = await startStack();
-    assert.equal((await fetch(`${url}/signals/latest?token=NOPE`)).status, 404);
-  });
-
-  it("charges once per payment and refuses to reuse it for another resource", async () => {
-    const { url, wallet, config } = await startStack();
-    await fetch(`${url}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: wallet.address, usdm: "10" }) });
-    const http = new x402HTTPClient(x402Client.fromConfig({
-      schemes: [{ network: NETWORK, client: new ExactCardanoScheme(wallet.signer) }],
-      spendControls: { allowedAssets: [{ network: NETWORK, asset: config.usdmAsset, maxAmountPerPayment: "5000000" }] },
-    }));
-    const first = await fetch(`${url}/signals/latest?token=MIN`);
-    const payload = await http.createPaymentPayload(http.getPaymentRequiredResponse(name => first.headers.get(name)));
-    const headers = http.encodePaymentSignatureHeader(payload);
-
-    const paid = await fetch(`${url}/signals/latest?token=MIN`, { headers });
-    assert.equal(paid.status, 200);
-    const body = await paid.json() as any;
-    // The same signed payment again: same response, not a second charge.
-    const again = await fetch(`${url}/signals/latest?token=MIN`, { headers });
-    assert.equal(again.status, 200);
-    assert.equal((await again.json() as any).delivery.hash, body.delivery.hash);
-    // ...and it cannot buy a different resource.
-    const other = await fetch(`${url}/signals/latest?token=SNEK`, { headers });
-    assert.notEqual(other.status, 200);
-
-    const balances = await wallet.balances();
-    assert.equal(balances[config.usdmAsset], toUnits("10.05") - toUnits("5"));
+  it("allows one account per identity document (one platform wallet per person)", async () => {
+    const { apiUrl } = await startStack();
+    await onboard(apiUrl, "Carol", { doc: "P9999999" });
+    const { body: { apiKey } } = await call(`${apiUrl}/onboarding/start`, { body: { name: "Carol again" } });
+    const second = await call(`${apiUrl}/onboarding/kyc`, { key: apiKey, body: { fullName: "Carol", documentNumber: "P 9999-999", country: "MY" } });
+    assert.equal(second.status, 409);
   });
 });
 
-describe("agent loop", () => {
-  it("green path: 402 -> borrow -> pay -> trade -> repay -> collateral released", async () => {
-    const { agentConfig, wallet, emit, events, ctx } = await startStack();
-    const result = await runAgent("Get me a trading signal for MIN and trade it", { config: agentConfig, wallet, emit, brain: "scripted", forceOutcome: "win" });
-    const calls = events.filter(e => e.type === "tool_call").map(e => (e as { tool: string }).tool);
-    assert.deepEqual(calls, ["check_balance", "get_signal", "borrow", "get_signal", "execute_trade", "loan_status", "check_balance", "repay"]);
-    assert.match(result.summary, /Repaid loan/);
+describe("the drawing's flow over MCP", () => {
+  it("search → 402 → 0.05 < 5 → sync → collateral borrowing → pay → data → trade → repay", async () => {
+    const { apiUrl, gatewayUrl, ctx } = await startStack({ dexOutcome: "win" });
+    const { key } = await onboard(apiUrl, "Alice");
+    const { client, tool } = await mcp(gatewayUrl, key);
+    assert.ok((await client.listTools()).tools.length >= 12);
 
-    const [loan] = ctx.lending.list({ agentId: "agent-demo" });
-    assert.equal(loan.status, "repaid");
-    assert.equal(loan.outstanding, "0");
-    assert.deepEqual(loan.events.map(e => e.kind), ["disbursed", "repayment", "collateral_released"]);
-    assert.equal(ctx.users.consent(DEMO_USER).bundle?.status, "held");
+    const found = await tool("search_data", { category: "signal", query: "MIN" });
+    const listingId = found.results[0].listing_id;
+    const first = await tool("buy_data", { listing_id: listingId });
+    assert.equal(first.status, "insufficient_funds");
+    assert.equal(first.balance_usdm, "0.05");
 
-    const delivery = ctx.db.get<{ id: string }>("SELECT id FROM deliveries")!;
+    const needsSync = await tool("borrow", { amount_usdm: "5" });
+    assert.equal(needsSync.status, "sync_required");
+    const synced = await tool("sync_context", { items: CHATS });
+    assert.equal(synced.ready_to_borrow, true);
+    const loan = await tool("borrow", { amount_usdm: "5" });
+    assert.equal(loan.status, "borrowed");
+    assert.match(loan.collateral, /4 redacted items locked/);
+
+    const bought = await tool("buy_data", { listing_id: listingId });
+    assert.equal(bought.status, "delivered");
+    assert.equal(bought.listing.data.token, "MIN");
+    const trade = await tool("trade_signal", { delivery_id: bought.delivery_id });
+    assert.equal(trade.outcome, "win");
+    const repaid = await tool("repay_loan");
+    assert.equal(repaid.status, "repaid");
+    assert.equal(repaid.collateral, "released");
+
     await new Promise(resolve => setTimeout(resolve, 50));
-    const view = ctx.signals.deliveryView(ctx.signals.delivery(delivery.id));
-    assert.equal(view.decisionLog.status, "confirmed");
-    assert.match(view.deliveryHash, /^[0-9a-f]{64}$/);
+    const delivery = ctx.data.deliveryView(ctx.data.delivery(bought.delivery_id));
+    assert.equal(delivery.decisionLog.status, "confirmed");
+    assert.match(delivery.request.buyer, /^did:web:/);
+    const [view] = ctx.lending.list({});
+    assert.deepEqual(view.events.map(e => e.kind), ["collateral_locked", "disbursed", "repayment", "collateral_released"]);
+    // Synced context was stored redacted: no names, dates or phone numbers.
+    const recent = (await call(`${apiUrl}/me/sync`, { key })).body.recent.map((r: { line: string }) => r.line).join(" ");
+    assert.ok(!recent.includes("30th Sept") && recent.includes("[PERSON]") && recent.includes("[DATE]"));
   });
 
-  it("red path: loss -> asks for top-up -> deadline -> default -> bundle listed -> enterprise buys it", async () => {
-    const { agentConfig, wallet, emit, ctx, url } = await startStack({ loanDeadlineMs: 1500 });
-    const result = await runAgent("Trade MIN for me", { config: agentConfig, wallet, emit, brain: "scripted", forceOutcome: "loss" });
-    assert.equal(result.notifications.length, 1);
-    assert.match(result.notifications[0], /Top me up/);
-    let [loan] = ctx.lending.list({ agentId: "agent-demo" });
+  it("buys live prices (flights, hotels, products) and lets users upload and rate data", async () => {
+    const { apiUrl, gatewayUrl } = await startStack();
+    const { key } = await onboard(apiUrl, "Dan", { sync: CHATS });
+    await fetch(`${apiUrl}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: (await call(`${apiUrl}/me`, { key })).body.agent.address, usdm: "3" }) });
+    const { tool } = await mcp(gatewayUrl, key);
+    const flights = await tool("search_data", { category: "flight", query: "KUL-SIN" });
+    assert.ok(flights.results.length >= 3);
+    const flight = await tool("buy_data", { category: "flight", query: "KUL-SIN" });
+    assert.equal(flight.status, "delivered");
+    assert.equal(flight.listing.data.from, "KUL");
+    assert.equal((await tool("buy_data", { category: "hotel", query: "Geylang" })).listing.data.area, "Geylang");
+
+    const upload = await tool("upload_data", { category: "product", data: { name: "Pokemon 30th Anniversary Booster Pack", store: "Mydin", price: 35, currency: "MYR" } });
+    assert.equal(upload.validated, false);
+    assert.equal((await tool("rate_data", { delivery_id: flight.delivery_id, useful: true })).rating, "useful");
+    const missing = await tool("upload_data", { category: "signal", data: { token: "MIN" } });
+    assert.match(missing.error, /needs/);
+  });
+});
+
+describe("curl", () => {
+  it("POST /v1/ask runs the whole flow in plain English (scripted brain, no OpenAI key)", async () => {
+    const { apiUrl, gatewayUrl, ctx } = await startStack();
+    const { key } = await onboard(apiUrl, "Eve", { sync: CHATS });
+    const { status, body } = await call(`${gatewayUrl}/v1/ask?format=json`, { key, body: { message: "Find me trading signals on CARSEM for MIN", forceOutcome: "win" } });
+    assert.equal(status, 200);
+    assert.equal(body.brain, "scripted");
+    assert.match(body.summary, /Repaid/);
+    assert.equal(ctx.lending.list({})[0].status, "repaid");
+    const calls = body.events.filter((e: { type: string }) => e.type === "tool_call").map((e: { tool: string }) => e.tool);
+    assert.deepEqual(calls.slice(0, 5), ["carsem_status", "search_data", "buy_data", "borrow", "buy_data"]);
+    // Every tool call is in the user's activity feed (for the dashboard).
+    const activity = (await call(`${gatewayUrl}/v1/activity`, { key })).body;
+    assert.ok(activity.some((a: { type: string; tool?: string }) => a.type === "tool_call" && a.tool === "borrow"));
+  });
+
+  it("POST /v1/tools/:name runs one tool", async () => {
+    const { apiUrl, gatewayUrl } = await startStack();
+    const { key } = await onboard(apiUrl, "Finn");
+    const { body } = await call(`${gatewayUrl}/v1/tools/search_data`, { key, body: { category: "product", query: "pokemon" } });
+    assert.ok(body.results.some((r: { title: string }) => r.title.includes("Pokemon")));
+    assert.equal((await call(`${gatewayUrl}/v1/tools/search_data`, { key, body: { category: "cars" } })).status, 400);
+  });
+});
+
+describe("default: published for every user, keeps selling", () => {
+  it("loss → top-up request → deadline → published → users and enterprises keep buying", async () => {
+    const { apiUrl, gatewayUrl, ctx } = await startStack({ loanDeadlineMs: 1500 });
+    const alice = await onboard(apiUrl, "Alice", { sync: CHATS });
+    const { body: ask } = await call(`${gatewayUrl}/v1/ask?format=json`, { key: alice.key, body: { message: "Trade MIN for me", forceOutcome: "loss" } });
+    assert.match(ask.notifications[0], /published on CARSEM/);
+    let [loan] = ctx.lending.list({});
     assert.equal(loan.status, "open");
 
     await new Promise(resolve => setTimeout(resolve, 1600));
     assert.deepEqual(ctx.lending.checkDefaults(), [loan.id]);
-    [loan] = ctx.lending.list({ agentId: "agent-demo" });
-    assert.equal(loan.status, "defaulted");
+    const bob = await onboard(apiUrl, "Bob");
+    await fetch(`${apiUrl}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: bob.profile.agent.address, usdm: "2" }) });
+    const { tool } = await mcp(gatewayUrl, bob.key);
+    const published = await tool("browse_published_data");
+    assert.equal(published.published.length, 1);
+    const access = await tool("access_published_data", { bundle_id: published.published[0].bundle_id });
+    assert.equal(access.status, "accessed");
+    assert.ok(access.bundle.messages.every((m: string) => !m.includes("30th Sept")));
+    assert.equal((await tool("access_published_data", { bundle_id: published.published[0].bundle_id })).http, 409);
+    // The owner cannot buy their own data.
+    assert.equal((await call(`${apiUrl}/market/bundles/${published.published[0].bundle_id}/access`, { method: "POST", key: alice.key })).status, 409);
 
-    const { body: listings } = await json(`${url}/market/bundles`);
-    assert.equal(listings.length, 1);
-    assert.equal(listings[0].status, "listed");
-    // Repaying a defaulted loan is refused before any payment is requested.
-    assert.equal((await fetch(`${url}/loans/${loan.id}/repay`, { method: "POST" })).status, 409);
-
-    const buyer = simWallet(url, "enterprise-amazon");
-    const purchase = await paidFetch<any>(`${url}/market/bundles/${listings[0].id}/buy?bid=bid_amazon`, { method: "POST", wallet: buyer, asset: ctx.config.usdmAsset, maxAmount: toUnits("25") });
-    assert.equal(purchase.status, 200);
-    assert.ok(purchase.body.bundle.messages.length > 0);
-    assert.ok(purchase.body.bundle.messages.every((m: string) => !m.includes("Sarah") && !m.includes("+60")));
-    // The sale covers the 5.1 debt, the bundle comes off the market, the surplus goes to the owner.
-    [loan] = ctx.lending.list({ agentId: "agent-demo" });
-    assert.equal(loan.status, "defaulted");
+    [loan] = ctx.lending.list({});
+    assert.equal(loan.outstanding, "4.1");
+    const amazon = await call(`${gatewayUrl}/enterprises/Amazon/buy`, { body: { bundleId: published.published[0].bundle_id } });
+    assert.equal(amazon.status, 200, JSON.stringify(amazon.body));
+    [loan] = ctx.lending.list({});
     assert.equal(loan.outstanding, "0");
-    assert.deepEqual(loan.events.map(e => e.kind), ["disbursed", "defaulted", "recovery_sale", "debt_recovered", "collateral_released"]);
-    assert.equal((await json(`${url}/users/${DEMO_USER}`)).body.earnings, "19.9");
-    assert.deepEqual((await json(`${url}/market/bundles`)).body, []);
+    assert.ok(loan.events.some(e => e.kind === "debt_recovered"));
+    // Still published: it keeps selling after the debt is covered; the surplus goes to the platform.
+    const after = (await call(`${apiUrl}/market/bundles`)).body;
+    assert.equal(after[0].status, "published");
+    const sales = (await call(`${apiUrl}/market/sales`)).body;
+    assert.ok(sales.some((s: { channel: string; toPlatform: string }) => s.channel === "enterprise" && s.toPlatform === "20.9"));
   });
 
-  it("rescue: loss -> user tops up -> 'repay my loan' repays in full", async () => {
-    const { agentConfig, wallet, emit, ctx, url } = await startStack();
-    await runAgent("Trade MIN for me", { config: agentConfig, wallet, emit, brain: "scripted", forceOutcome: "loss" });
-    const early = await runAgent("Repay my loan", { config: agentConfig, wallet, emit, brain: "scripted" });
-    assert.match(early.summary, /still missing/);
-    await fetch(`${url}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: wallet.address, usdm: "5.05" }) });
-    const result = await runAgent("Repay my loan", { config: agentConfig, wallet, emit, brain: "scripted" });
-    assert.match(result.summary, /Repaid loan/);
-    const [loan] = ctx.lending.list({ agentId: "agent-demo" });
+  it("a private enterprise sale while the loan is open repays it and pays the owner", async () => {
+    const { apiUrl, gatewayUrl, ctx } = await startStack();
+    const alice = await onboard(apiUrl, "Alice", { sync: CHATS });
+    await call(`${gatewayUrl}/v1/tools/borrow`, { key: alice.key, body: { amount_usdm: "5" } });
+    const [bundle] = (await call(`${apiUrl}/market/bundles`)).body;
+    assert.equal(bundle.status, "pledged");
+    assert.equal(bundle.publicAccess, null);
+    assert.equal((await call(`${gatewayUrl}/enterprises/eBay/buy`, { body: { bundleId: bundle.id } })).status, 200);
+    const [loan] = ctx.lending.list({});
     assert.equal(loan.status, "repaid");
-  });
-
-  it("an enterprise purchase while the loan is open repays it and credits the data owner", async () => {
-    const { agentConfig, wallet, emit, ctx, url } = await startStack();
-    const tools = new AgentTools(agentConfig, wallet, emit);
-    const loan = await tools.borrow({ amount_usdm: "5" });
-    assert.ok(!("error" in loan));
-
-    const { body: listings } = await json(`${url}/market/bundles`);
-    assert.equal(listings[0].status, "pledged");
-    const buyer = simWallet(url, "enterprise-ebay");
-    const purchase = await paidFetch<any>(`${url}/market/bundles/${listings[0].id}/buy?bid=ebay`, { method: "POST", wallet: buyer, asset: ctx.config.usdmAsset, maxAmount: toUnits("50") });
-    assert.equal(purchase.status, 200);
-
-    const view = ctx.lending.view(ctx.lending.get(loan.loan_id));
-    assert.equal(view.status, "repaid");
-    assert.deepEqual(view.events.map(e => e.kind), ["disbursed", "bundle_sale", "collateral_released"]);
-    const { body: user } = await json(`${url}/users/${DEMO_USER}`);
-    assert.equal(user.earnings, "44.9");
+    assert.equal((await call(`${apiUrl}/me`, { key: alice.key })).body.earnings, "44.9");
   });
 });
 
-describe("lending rules", () => {
-  it("needs the agent key, the owner's consent, and one loan at a time", async () => {
-    const { url, agentConfig, wallet, emit } = await startStack();
-    const post = (body: unknown, key = agentConfig.agentKey) => json(`${url}/loans`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, body: JSON.stringify(body) });
-    assert.equal((await post({ agentId: "agent-demo", amount: "5" }, "wrong")).status, 401);
-    assert.equal((await post({ agentId: "agent-demo", amount: "50" })).status, 400);
-
-    const tools = new AgentTools(agentConfig, wallet, emit);
-    assert.ok(!("error" in await tools.borrow({ amount_usdm: "5" })));
-    assert.equal((await post({ agentId: "agent-demo", amount: "1" })).status, 409);
-    assert.equal((await json(`${url}/users/${DEMO_USER}/consent`, { method: "DELETE" })).status, 409);
-  });
-
-  it("refuses to lend once the owner revokes consent", async () => {
-    const { url, agentConfig, wallet, emit } = await startStack();
-    assert.equal((await json(`${url}/users/${DEMO_USER}/consent`, { method: "DELETE" })).body.status, "revoked");
-    const result = await new AgentTools(agentConfig, wallet, emit).borrow({ amount_usdm: "5" });
-    assert.ok("error" in result && result.status === 403);
-  });
-});
-
-describe("Masumi agentic service API", () => {
-  it("runs a job: start_job -> pay over x402 -> status completed with the result hash", async () => {
-    const { url, wallet, ctx } = await startStack();
-    assert.equal((await json(`${url}/availability`)).body.status, "available");
-    await fetch(`${url}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: wallet.address, usdm: "5" }) });
-    const { body: job } = await json(`${url}/start_job`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input_data: [{ key: "token", value: "SNEK" }] }) });
-    assert.equal((await json(`${url}/status?job_id=${job.job_id}`)).body.status, "awaiting_payment");
-    const paid = await paidFetch<any>(job.payment.url, { wallet, asset: ctx.config.usdmAsset, maxAmount: toUnits("5") });
+describe("x402 and Masumi", () => {
+  it("charges once per payment and never reuses it for another listing", async () => {
+    const { apiUrl, config } = await startStack();
+    const { key, profile } = await onboard(apiUrl, "Gus");
+    const buyer = new SimWallet("e2e-direct-buyer");
+    await fetch(`${apiUrl}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: buyer.address, usdm: "10", ada: "10" }) });
+    const wallet = simWallet(apiUrl, "e2e-direct-buyer");
+    const http = new x402HTTPClient(x402Client.fromConfig({
+      schemes: [{ network: NETWORK, client: new ExactCardanoScheme(wallet.signer) }],
+      spendControls: { allowedAssets: [{ network: NETWORK, asset: config.usdmAsset, maxAmountPerPayment: "5000000" }] },
+    }));
+    const auth = { Authorization: `Bearer ${key}` };
+    const first = await fetch(`${apiUrl}/data/listings/sig_min_09`, { headers: auth });
+    assert.equal(first.status, 402);
+    const offer = decodePaymentRequiredHeader(first.headers.get("PAYMENT-REQUIRED")!).accepts[0];
+    assert.equal(offer.amount, "5000000");
+    assert.equal(offer.network, NETWORK);
+    const payload = await http.createPaymentPayload(http.getPaymentRequiredResponse(name => first.headers.get(name)));
+    const headers = { ...auth, ...http.encodePaymentSignatureHeader(payload) };
+    const paid = await fetch(`${apiUrl}/data/listings/sig_min_09`, { headers });
     assert.equal(paid.status, 200);
-    const { body: status } = await json(`${url}/status?job_id=${job.job_id}`);
+    const again = await fetch(`${apiUrl}/data/listings/sig_min_09`, { headers });
+    assert.equal((await again.json() as any).delivery.hash, (await paid.json() as any).delivery.hash);
+    assert.notEqual((await fetch(`${apiUrl}/data/listings/sig_snek_09`, { headers })).status, 200);
+    assert.equal((await wallet.balances())[config.usdmAsset], toUnits("5"));
+    assert.ok(profile.agent);
+  });
+
+  it("serves a MIP-003 job paid over x402", async () => {
+    const { apiUrl, config } = await startStack();
+    assert.equal((await call(`${apiUrl}/availability`)).body.status, "available");
+    const { body: job } = await call(`${apiUrl}/start_job`, { body: { input_data: [{ key: "category", value: "flight" }, { key: "query", value: "KUL-SIN" }] } });
+    const buyer = new SimWallet("e2e-masumi-buyer");
+    await fetch(`${apiUrl}/sim/faucet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: buyer.address, usdm: "1", ada: "5" }) });
+    const paid = await paidFetch<any>(job.payment.url, { wallet: simWallet(apiUrl, "e2e-masumi-buyer"), asset: config.usdmAsset, maxAmount: toUnits("1") });
+    assert.equal(paid.status, 200);
+    const { body: status } = await call(`${apiUrl}/status?job_id=${job.job_id}`);
     assert.equal(status.status, "completed");
     assert.equal(status.result_hash, paid.body.delivery.hash);
   });
@@ -225,5 +321,13 @@ describe("redaction", () => {
     assert.deepEqual(out.intents, ["birthday gift — budget intent"]);
     assert.equal(redactMessage("Email bob@example.com or call +60 12-345 6789").redacted, "Email [EMAIL] or call [PHONE]");
     assert.equal(redactMessage("I was diagnosed last week").withheld, "health");
+  });
+
+  it("removes people but keeps places and products, which is what the data is worth", () => {
+    assert.equal(redactMessage("Cheapest flight from Kuala Lumpur to Singapore").redacted, "Cheapest flight from Kuala Lumpur to Singapore");
+    assert.equal(redactMessage("Cheapest Pokemon Pack 30th Anniversary").redacted, "Cheapest Pokemon Pack 30th Anniversary");
+    assert.equal(redactMessage("Call Sarah at +60 12-345 6789").redacted, "Call [NAME] at [PHONE]");
+    assert.equal(redactMessage("Trip to Bali with my wife Sarah").redacted, "Trip to Bali with [PERSON]");
+    assert.equal(redactMessage("Dinner with Ahmad and Mei").redacted, "Dinner with [NAME] and [NAME]");
   });
 });

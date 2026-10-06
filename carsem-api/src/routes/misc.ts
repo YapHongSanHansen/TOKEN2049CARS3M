@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { LOVELACE, NETWORK, fromUnits, toUnits } from "@carsem/shared";
 import type { SimulatedChain } from "../chain/simulated.js";
-import type { Context } from "../context.js";
+import { userOf, type Context } from "../context.js";
 import { HttpError } from "../services/errors.js";
 import { wrap } from "./wrap.js";
 
@@ -16,7 +16,11 @@ export function miscRoutes(app: Express, ctx: Context) {
       facilitator: chain.mode === "preprod" ? config.preprod.facilitatorUrl : "built-in (simulated ledger)",
       treasury: chain.treasuryAddress,
       usdmAsset: config.usdmAsset,
-      signalPrice: fromUnits(config.signalPrice),
+      prices: Object.fromEntries(Object.entries(config.prices).map(([k, v]) => [k, fromUnits(v)])),
+      publicAccessPrice: fromUnits(config.publicAccessPrice),
+      kyc: "mock (demo)",
+      issuer: ctx.issuer.did,
+      gateway: config.gatewayPublicUrl,
       l1Confirmations: config.l1Confirmations,
     });
   });
@@ -26,11 +30,12 @@ export function miscRoutes(app: Express, ctx: Context) {
     res.json({ address: req.params.address, explorerUrl: chain.explorerAddress(req.params.address), tADA: fromUnits(balances[LOVELACE] ?? "0"), tUSDM: fromUnits(balances[config.usdmAsset] ?? "0"), raw: balances });
   }));
 
-  // DEX simulator (Minswap stand-in).
+  // DEX simulator (Minswap stand-in). The caller's own agent trades a signal it bought.
   app.post("/dex/swap", wrap(async (req, res) => {
+    const agent = ctx.users.requireOnboarded(userOf(ctx, req));
     const force = req.body?.forceOutcome;
     if (force !== undefined && force !== "win" && force !== "loss") throw new HttpError(400, "forceOutcome must be win or loss");
-    res.json(await dex.swap({ agentAddress: String(req.body?.agentAddress ?? ""), deliveryId: String(req.body?.deliveryId ?? ""), sizeAda: Number(req.body?.sizeAda), forceOutcome: force }));
+    res.json(await dex.swap({ agentAddress: agent.address, deliveryId: String(req.body?.deliveryId ?? ""), sizeAda: Number(req.body?.sizeAda), forceOutcome: force }));
   }));
   app.get("/dex/trades", (req, res) => { res.json(dex.trades(typeof req.query.agentAddress === "string" ? req.query.agentAddress : undefined)); });
 
@@ -39,12 +44,14 @@ export function miscRoutes(app: Express, ctx: Context) {
     const rows = [
       ...db.all<{ at: number; loan_id: string; kind: string; amount_units: string | null; tx: string | null }>("SELECT created_at AS at, loan_id, kind, amount_units, tx FROM loan_events ORDER BY id DESC LIMIT 50")
         .map(e => ({ at: e.at, type: `loan.${e.kind}`, loanId: e.loan_id, amount: e.amount_units && fromUnits(e.amount_units), tx: e.tx })),
-      ...db.all<{ at: number; id: string; signal_id: string; buyer: string | null; payment_tx: string; delivery_hash: string; log_tx: string | null }>("SELECT created_at AS at, id, signal_id, buyer, payment_tx, delivery_hash, log_tx FROM deliveries ORDER BY created_at DESC LIMIT 50")
-        .map(d => ({ at: d.at, type: "signal.delivered", deliveryId: d.id, signalId: d.signal_id, buyer: d.buyer, tx: d.payment_tx, deliveryHash: d.delivery_hash, logTx: d.log_tx })),
+      ...db.all<{ at: number; id: string; listing_id: string; category: string; title: string; buyer_address: string | null; payment_tx: string; delivery_hash: string; log_tx: string | null }>("SELECT d.created_at AS at, d.id, d.listing_id, l.category, l.title, d.buyer_address, d.payment_tx, d.delivery_hash, d.log_tx FROM deliveries d JOIN listings l ON l.id = d.listing_id ORDER BY d.created_at DESC LIMIT 50")
+        .map(d => ({ at: d.at, type: "data.delivered", deliveryId: d.id, listingId: d.listing_id, category: d.category, title: d.title, buyer: d.buyer_address, tx: d.payment_tx, deliveryHash: d.delivery_hash, logTx: d.log_tx })),
       ...db.all<{ at: number; id: string; outcome: string; pnl_units: string; payout_tx: string | null }>("SELECT created_at AS at, id, outcome, pnl_units, payout_tx FROM trades ORDER BY created_at DESC LIMIT 50")
         .map(t => ({ at: t.at, type: "dex.trade", tradeId: t.id, outcome: t.outcome, pnl: fromUnits(t.pnl_units), tx: t.payout_tx, simulated: true })),
-      ...db.all<{ at: number; id: string; bundle_id: string; bid_id: string; price_units: string; payment_tx: string }>("SELECT created_at AS at, id, bundle_id, bid_id, price_units, payment_tx FROM sales ORDER BY created_at DESC LIMIT 50")
-        .map(s => ({ at: s.at, type: "market.sale", saleId: s.id, bundleId: s.bundle_id, bidId: s.bid_id, price: fromUnits(s.price_units), tx: s.payment_tx })),
+      ...db.all<{ at: number; id: string; bundle_id: string; channel: string; bid_id: string | null; price_units: string; payment_tx: string }>("SELECT created_at AS at, id, bundle_id, channel, bid_id, price_units, payment_tx FROM sales ORDER BY created_at DESC LIMIT 50")
+        .map(s => ({ at: s.at, type: `market.${s.channel}_sale`, saleId: s.id, bundleId: s.bundle_id, bidId: s.bid_id, price: fromUnits(s.price_units), tx: s.payment_tx })),
+      ...db.all<{ at: number; id: string; name: string }>("SELECT onboarded_at AS at, id, name FROM users WHERE onboarded_at IS NOT NULL ORDER BY onboarded_at DESC LIMIT 20")
+        .map(u => ({ at: u.at, type: "user.onboarded", userId: u.id, name: u.name, tx: null })),
     ].sort((a, b) => b.at - a.at).slice(0, 100)
       .map(({ at, tx, ...rest }) => ({ at: new Date(at).toISOString(), ...rest, tx: tx && { hash: tx, explorerUrl: chain.explorerTx(tx) } }));
     res.json(rows);

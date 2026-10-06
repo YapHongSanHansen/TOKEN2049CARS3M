@@ -73,6 +73,24 @@ export function Stat({ label, value, sub, tone }: { label: string; value: ReactN
   );
 }
 
+export function CopyBlock({ code, label }: { code: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="copy-block">
+      {label && <div className="copy-label">{label}</div>}
+      <pre><code>{code}</code></pre>
+      <button className="copy-button" onClick={async () => {
+        try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
+      }}>{copied ? "copied" : "copy"}</button>
+    </div>
+  );
+}
+
+/** Decodes a JWT payload for display (no verification; the API verifies). */
+export function decodeJwt(jwt: string): any {
+  try { return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))); } catch { return undefined; }
+}
+
 export function ErrorNote({ error }: { error?: string }) {
   return error ? <p className="error-note">{error}</p> : null;
 }

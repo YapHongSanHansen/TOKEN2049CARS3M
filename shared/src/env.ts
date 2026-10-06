@@ -12,10 +12,14 @@ export function repoRoot(): string {
   return process.cwd();
 }
 
-/** The monorepo's root .env, if present. */
+/** The root env files in precedence order: .env.local (your secrets) wins over .env. */
+export function rootEnvPaths(): string[] {
+  return [".env.local", ".env"].map(name => join(repoRoot(), name)).filter(path => existsSync(path));
+}
+
+/** @deprecated use rootEnvPaths */
 export function rootEnvPath(): string | undefined {
-  const candidate = join(repoRoot(), ".env");
-  return existsSync(candidate) ? candidate : undefined;
+  return rootEnvPaths()[0];
 }
 
 /** Relative paths in .env are relative to the repo root, not to the workspace that runs. */

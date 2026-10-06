@@ -4,9 +4,9 @@
  */
 import { config as loadEnv } from "dotenv";
 import { toClientCardanoSigner } from "@x402/cardano";
-import { LOVELACE, NETWORK, fromUnits, rootEnvPath, toUnits } from "@carsem/shared";
+import { LOVELACE, NETWORK, fromUnits, rootEnvPaths, toUnits } from "@carsem/shared";
 
-loadEnv({ path: rootEnvPath(), quiet: true });
+loadEnv({ path: rootEnvPaths(), quiet: true });
 const env = (name: string) => process.env[name]?.trim() ?? "";
 let failures = 0;
 const ok = (line: string) => console.log(`  ✔ ${line}`);
@@ -20,7 +20,9 @@ const facilitator = (env("FACILITATOR_URL") || "http://localhost:4022").replace(
 console.log("\nConfiguration");
 env("CHAIN_MODE") === "preprod" ? ok("CHAIN_MODE=preprod") : fail(`CHAIN_MODE=${env("CHAIN_MODE") || "simulated"}`, "set CHAIN_MODE=preprod in .env");
 /^[0-9a-fA-F]{64}$/.test(env("BUNDLE_KEY")) ? ok("BUNDLE_KEY set") : fail("BUNDLE_KEY missing", "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\" and put it in .env");
-env("ANTHROPIC_API_KEY") ? ok("ANTHROPIC_API_KEY set (Claude brain)") : console.log("  · ANTHROPIC_API_KEY not set: the scripted brain will run");
+for (const name of ["WALLET_KEY", "SERVICE_TOKEN"]) /^[0-9a-fA-F]{64}$/.test(env(name)) ? ok(`${name} set`) : fail(`${name} missing`, "it is generated in .env.local; restore it from there");
+env("OPENAI_API_KEY") ? (env("OPENAI_MODEL") ? ok(`OpenAI brain: ${env("OPENAI_MODEL")}`) : fail("OPENAI_MODEL missing", "set the model your key can use with function calling")) : console.log("  · OPENAI_API_KEY not set: curl /v1/ask uses the scripted brain (Hermes/Claude/ChatGPT bring their own)");
+/^https:/.test(env("GATEWAY_PUBLIC_URL")) ? ok(`public gateway ${env("GATEWAY_PUBLIC_URL")}`) : console.log("  · GATEWAY_PUBLIC_URL is not public: fine for Hermes / Claude Code on this machine; ChatGPT / Claude web need ngrok");
 
 console.log("\nBlockfrost");
 let blockfrostOk = false;
@@ -41,8 +43,7 @@ try {
 
 console.log("\nWallets");
 const needs: Array<[string, string, bigint, bigint, bigint?]> = [
-  ["TREASURY_MNEMONIC", "treasury", toUnits("20"), toUnits("10")],
-  ["AGENT_MNEMONIC", "agent", toUnits("10"), 0n, toUnits("1")],
+  ["TREASURY_MNEMONIC", "treasury", toUnits("50"), toUnits("20")],
   ["ENTERPRISE_MNEMONIC", "enterprise", toUnits("5"), toUnits("5")],
 ];
 for (const [name, label, minAda, minUsdm, maxUsdm] of needs) {

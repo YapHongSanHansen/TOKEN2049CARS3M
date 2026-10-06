@@ -17,9 +17,6 @@
     "dev": "npm run dev -w carsem-api",
     "api": "npm run start -w carsem-api",
     "seed": "npm run seed -w carsem-api --",
-    "agent": "npm run run -w agent --",
-    "agent:buy": "npm run buy -w agent",
-    "agent:serve": "npm run serve -w agent",
     "enterprise:buy": "npm run enterprise -w agent --",
     "facilitator:up": "sh facilitator/up.sh",
     "facilitator:down": "sh facilitator/down.sh",
@@ -28,7 +25,12 @@
     "wallets:new": "npm run wallets:new -w carsem-api",
     "preflight": "npm run preflight -w carsem-api",
     "web": "npm run dev -w frontend",
-    "demo": "concurrently -k -n api,agent,web -c blue,magenta,green \"npm run dev -w carsem-api\" \"npm run serve -w agent\" \"npm run dev -w frontend\""
+    "demo": "concurrently -k -n api,gateway,web -c blue,magenta,green \"npm run dev -w carsem-api\" \"npm run dev -w agent\" \"npm run dev -w frontend\"",
+    "gateway": "npm run serve -w agent",
+    "ask": "npm run ask -w agent --",
+    "tool": "npm run tool -w agent --",
+    "sync": "npm run sync -w agent --",
+    "demo:user": "npm run demo:user -w agent --"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

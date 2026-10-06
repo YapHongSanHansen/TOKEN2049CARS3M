@@ -14,6 +14,8 @@ export interface Chain {
   readonly marketMakerAddress: string;
   /** Sends `amount` base units of `asset` and waits until the chain has it. */
   transfer(from: WalletRole, to: string, asset: string, amount: bigint, metadata?: Record<string, unknown>): Promise<ChainTx>;
+  /** Several assets to one address (one transaction on preprod). */
+  sendAssets(from: WalletRole, to: string, assets: Record<string, bigint>, metadata?: Record<string, unknown>): Promise<ChainTx>;
   /** Writes a label-674 metadata transaction from the treasury (decision log / proof of delivery). */
   logDecision(message: string[]): Promise<ChainTx>;
   /** asset -> base units. */

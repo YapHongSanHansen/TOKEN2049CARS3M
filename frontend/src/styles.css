@@ -223,3 +223,49 @@ textarea { width: 100%; resize: vertical; font-size: 13px; line-height: 1.6; }
   main { padding: 12px 16px; }
   .tabs { width: 100%; overflow-x: auto; }
 }
+
+/* ---- onboarding (Get started) ------------------------------------------------ */
+.start { max-width: 1100px; margin: 0 auto; }
+.start-head h1 { font-size: 24px; margin: 8px 0 6px; letter-spacing: -.01em; }
+.start-head p { max-width: 760px; }
+.stepper { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 18px 0 20px; }
+.stepper li { display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+.stepper li span { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--panel-2); font-size: 12px; font-weight: 600; }
+.stepper li.current { color: var(--text); border-color: var(--accent); }
+.stepper li.current span { background: var(--accent); color: #fff; }
+.stepper li.done { color: var(--good); border-color: rgba(62, 207, 142, .4); }
+.stepper li.done span { background: rgba(62, 207, 142, .15); }
+.step-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.step-grid form { display: flex; flex-direction: column; gap: 4px; }
+.field input { color: var(--text); font-size: 14px; }
+.signout { margin-top: 16px; }
+.connect-grid { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(0, 1.5fr); gap: 16px; align-items: start; }
+.seg { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.seg button { font-size: 13px; padding: 6px 10px; }
+.seg button.active { border-color: var(--accent); color: var(--accent-2); background: rgba(91, 140, 255, .1); }
+.copy-block { position: relative; margin: 8px 0; }
+.copy-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.copy-block pre { margin: 0; padding: 12px 64px 12px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
+.copy-button { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 3px 8px; }
+.copy-label + pre + .copy-button { top: 26px; }
+.warn-note { color: var(--warn); font-size: 13px; }
+
+/* ---- my agent ------------------------------------------------------------------ */
+.step.alert-step { background: rgba(245, 177, 76, .08); border: 1px solid rgba(245, 177, 76, .45); }
+.step.alert-step strong { color: var(--warn); }
+.step.error-step { color: var(--bad); }
+.step-head time { margin-left: auto; }
+.sync-lines { margin-top: 10px; }
+.sync-form { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.sync-form button { align-self: flex-end; }
+.side-column textarea { font-size: 13px; }
+
+/* ---- dashboard ----------------------------------------------------------------- */
+.category-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.category { display: flex; flex-direction: column; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+.category strong { font-size: 20px; }
+
+@media (max-width: 1100px) {
+  .connect-grid { grid-template-columns: 1fr; }
+  .category-row { grid-template-columns: repeat(2, 1fr); }
+}

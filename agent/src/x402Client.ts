@@ -29,6 +29,8 @@ export interface PaidFetchOptions {
   maxAmount: bigint;
   method?: "GET" | "POST";
   body?: unknown;
+  /** Extra request headers (e.g. the user's CARSEM key). */
+  headers?: Record<string, string>;
   /** Return a reason string to stop before signing (e.g. insufficient balance). */
   beforePay?: (offer: PaymentRequirements) => Promise<string | undefined> | string | undefined;
   onStep?: (step: X402Step) => void;
@@ -45,7 +47,7 @@ export async function paidFetch<T = any>(url: string, options: PaidFetchOptions)
   const { wallet, onStep = () => {} } = options;
   const init = (headers: Record<string, string> = {}): RequestInit => ({
     method: options.method ?? "GET",
-    headers: { ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
+    headers: { ...(options.body === undefined ? {} : { "Content-Type": "application/json" }), ...options.headers, ...headers },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: AbortSignal.timeout(240_000),
   });

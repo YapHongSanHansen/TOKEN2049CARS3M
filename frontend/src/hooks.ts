@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import type { Health } from "./api";
+import type { Health, Profile } from "./api";
 
 /** Fetches now and every `intervalMs`; `refresh()` refetches immediately. */
 export function usePoll<T>(load: () => Promise<T>, intervalMs = 3000, deps: unknown[] = []) {
@@ -27,8 +27,11 @@ export function useNow(ms = 1000) {
   return now;
 }
 
+export interface Session { key: string; profile?: Profile; setKey(key: string): void; refresh(): Promise<void> }
 export const HealthContext = createContext<Health | undefined>(undefined);
+export const SessionContext = createContext<Session>({ key: "", setKey: () => {}, refresh: async () => {} });
 export const useHealth = () => useContext(HealthContext);
+export const useSession = () => useContext(SessionContext);
 
 /** Explorer link for a hash: cardanoscan on preprod, the ledger's own view when simulated. */
 export function useTxUrl() {

@@ -4,12 +4,12 @@
  * the bundle secures (or are CARSEM's recovery after a default).
  */
 import { buyBundle, enterpriseBalance } from "./buyers.js";
-import { loadAgentConfig } from "./config.js";
+import { loadGatewayConfig } from "./config.js";
 
 const args = process.argv.slice(2);
 const option = (name: string) => { const i = args.indexOf(`--${name}`); return i === -1 ? undefined : args[i + 1]; };
 const enterprise = option("enterprise") ?? "eBay";
-const config = loadAgentConfig();
+const config = loadGatewayConfig();
 
 try {
   const result = await buyBundle(config, {

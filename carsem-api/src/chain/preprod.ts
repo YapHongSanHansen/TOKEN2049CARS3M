@@ -86,6 +86,19 @@ export async function createPreprodChain(config: Config): Promise<Chain> {
         return next;
       });
     },
+    sendAssets(from, to, assets, metadata) {
+      let value = Assets.fromLovelace(assets[LOVELACE] ?? 0n);
+      for (const [asset, amount] of Object.entries(assets)) {
+        if (asset === LOVELACE || amount <= 0n) continue;
+        const { policyId, assetNameHex } = parseAssetUnit(asset);
+        value = Assets.addByHex(value, policyId, assetNameHex, amount);
+      }
+      return submit(from, tx => {
+        let next = tx.payToAddress({ address: Address.fromBech32(to), assets: value });
+        if (metadata) next = next.attachMetadata({ label: 674n, metadata: toMetadatum(metadata) });
+        return next;
+      });
+    },
     logDecision(message) {
       // A minimal self-payment that carries the message; the fee is the cost of the log entry.
       return submit("treasury", tx => tx

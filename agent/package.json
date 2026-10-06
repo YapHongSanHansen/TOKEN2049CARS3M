@@ -1,22 +1,27 @@
 {
-  "name": "@carsem/agent",
+  "name": "@carsem/gateway",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "run": "tsx src/cli.ts",
-    "buy": "tsx src/buy.ts",
+    "dev": "tsx watch src/server.ts",
     "serve": "tsx src/server.ts",
+    "ask": "tsx src/cli.ts",
+    "tool": "tsx src/tool.ts",
+    "sync": "tsx src/localSync.ts",
+    "demo:user": "tsx src/demoUser.ts",
     "enterprise": "tsx src/enterprise.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
     "@carsem/shared": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@scure/bip39": "^2.4.0",
     "@x402/cardano": "2.26.0",
     "@x402/core": "2.26.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "openai": "^7.28.0",
     "zod": "^4.1.0"
   },
   "devDependencies": {

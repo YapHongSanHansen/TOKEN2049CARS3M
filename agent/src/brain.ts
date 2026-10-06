@@ -1,169 +1,145 @@
 /**
- * The agent's brain. With Claude configured, Claude drives the tool loop (SDK
- * Tool Runner); otherwise a scripted planner runs the same policy, so the demo
- * works without an API key.
+ * The built-in brain behind `curl /v1/ask`. Hermes, Claude Code, ChatGPT and
+ * Claude bring their own brain over MCP; this one is for plain curl.
+ *   OpenAI (OPENAI_API_KEY + OPENAI_MODEL)  function calling over the same tools
+ *   scripted (no key)                       the same workflow, deterministic
  */
-import Anthropic from "@anthropic-ai/sdk";
-import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
-import * as z from "zod/v4";
+import OpenAI from "openai";
+import { z } from "zod";
 import { toUnits } from "@carsem/shared";
-import type { AgentConfig } from "./config.js";
-import { AgentTools, type AgentEvent } from "./tools.js";
-import type { AgentWallet } from "./wallet.js";
+import type { GatewayConfig } from "./config.js";
+import { findTool, TOOLS, WORKFLOW } from "./toolDefs.js";
+import type { AgentEvent, UserAgent } from "./tools.js";
 
+export type Brain = "openai" | "scripted";
 const KNOWN_TOKENS = ["MIN", "SNEK", "INDY", "DJED", "HOSKY"];
-
-export const SYSTEM_PROMPT = `You are the user's autonomous trading agent on Cardano (preprod testnet). You pay for data with x402 and you can borrow from CARSEM Lending against the user's redacted chat data, which the user has opted in to.
-
-Policy for a request to trade on a signal:
-1. Check the wallet balance.
-2. Call get_signal for the token. Paywalls are x402: get_signal either pays and returns the signal, or reports insufficient_funds without paying.
-3. If it reports insufficient_funds, borrow the signal's full price (price_usdm) from CARSEM, then call get_signal again. Never borrow more than you need for the purchase, and borrow at most once per run.
-4. Trade the delivered signal once with execute_trade (pass its delivery_id).
-5. If you borrowed: check the balance and the loan. If the tUSDM balance covers the loan's outstanding amount (principal + fee), repay it in full, which releases the user's collateral. If it does not, do not repay partially; notify the user with the exact top-up needed and the deadline, and explain that their redacted bundle will be listed for sale if the loan is not repaid in time.
-6. Finish with a short plain-language summary for the user: what you bought, what you borrowed, the trade result, and the loan status, including transaction hashes.
-
-If the user asks you to repay (for example after topping up your wallet), use my_loans to find the open loan, check the balance, and repay it in full if you can; otherwise tell them how much is still missing.
-
-Never pay for the same signal twice. Treat amounts as tUSDM test tokens. Be concise.`;
-
-function tokenFrom(message: string) {
-  const upper = message.toUpperCase();
-  return KNOWN_TOKENS.find(token => new RegExp(`\\b${token}\\b`).test(upper)) ?? "MIN";
-}
-
-const json = (value: unknown) => JSON.stringify(value);
+const failed = (result: unknown): result is { error: string } => !!result && typeof result === "object" && "error" in result;
 const clock = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleTimeString() : "the deadline");
-const shortHash = (hash: string | undefined) => (hash && hash.length > 16 ? `${hash.slice(0, 8)}…${hash.slice(-6)}` : hash ?? "");
+const short = (hash: string | undefined) => (hash && hash.length > 16 ? `${hash.slice(0, 8)}…${hash.slice(-6)}` : hash ?? "");
 
-async function claudeBrain(message: string, tools: AgentTools, config: AgentConfig, emit: (event: AgentEvent) => void) {
-  const client = new Anthropic();
-  const runner = client.beta.messages.toolRunner({
-    model: config.model,
-    max_tokens: 16000,
-    thinking: { type: "adaptive" },
-    max_iterations: 20,
-    // On a policy decline, the API re-runs the request on Anthropic's recommended fallback model.
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    system: SYSTEM_PROMPT,
-    tools: [
-      betaZodTool({ name: "check_balance", description: "Read the agent wallet's tUSDM and tADA balances.", inputSchema: z.object({}), run: async () => json(await tools.checkBalance()) }),
-      betaZodTool({
-        name: "get_signal", description: "Buy the latest trading signal for a token from CARSEM over x402. Pays only if the wallet can afford it; otherwise returns insufficient_funds with the price.",
-        inputSchema: z.object({ token: z.string().describe("Token symbol, e.g. MIN") }), run: async input => json(await tools.getSignal(input)),
-      }),
-      betaZodTool({
-        name: "borrow", description: "Borrow tUSDM from CARSEM Lending against the user's redacted chat data. Funds arrive in the agent wallet on chain. Returns the loan id, fee and deadline.",
-        inputSchema: z.object({ amount_usdm: z.string().describe("Amount in tUSDM, e.g. \"5\"") }), run: async input => json(await tools.borrow(input)),
-      }),
-      betaZodTool({
-        name: "execute_trade", description: "Trade a purchased signal on the DEX (simulated Minswap fill). Profit is paid to the wallet in tUSDM.",
-        inputSchema: z.object({ delivery_id: z.string(), size_ada: z.number().positive().optional().describe(`Position size in tADA (default ${config.tradeSizeAda})`) }),
-        run: async input => json(await tools.executeTrade(input)),
-      }),
-      betaZodTool({ name: "loan_status", description: "Read a loan's status, outstanding amount and deadline.", inputSchema: z.object({ loan_id: z.string() }), run: async input => json(await tools.loanStatus(input)) }),
-      betaZodTool({ name: "my_loans", description: "List this agent's recent loans (newest first) with status, outstanding amount and deadline.", inputSchema: z.object({}), run: async () => json(await tools.myLoans()) }),
-      betaZodTool({
-        name: "repay", description: "Repay a loan in full over x402 (pays the outstanding amount to CARSEM). Releases the user's collateral.",
-        inputSchema: z.object({ loan_id: z.string() }), run: async input => json(await tools.repay(input)),
-      }),
-      betaZodTool({ name: "notify_user", description: "Send the user a notification, e.g. to ask for a top-up before a loan deadline.", inputSchema: z.object({ message: z.string() }), run: async input => json(await tools.notifyUser(input)) }),
-    ],
-    messages: [{ role: "user", content: message }],
+async function openaiBrain(message: string, agent: UserAgent, config: GatewayConfig, emit: (e: AgentEvent) => void) {
+  if (!config.openai.model) throw new Error("Set OPENAI_MODEL (a model your key can use with function calling) to use the OpenAI brain.");
+  const client = new OpenAI({ apiKey: config.openai.apiKey });
+  const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = TOOLS.map(tool => {
+    const { $schema: _schema, ...parameters } = z.toJSONSchema(tool.input) as Record<string, unknown>;
+    return { type: "function", function: { name: tool.name, description: tool.description, parameters } };
   });
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [{ role: "system", content: WORKFLOW }, { role: "user", content: message }];
   let summary = "";
-  for await (const turn of runner) {
-    for (const block of turn.content) {
-      if (block.type === "text" && block.text.trim()) { emit({ type: "assistant", text: block.text }); summary = block.text; }
+  for (let turn = 0; turn < 24; turn++) {
+    const completion = await client.chat.completions.create({ model: config.openai.model, messages, tools });
+    const reply = completion.choices[0]?.message;
+    if (!reply) break;
+    messages.push(reply);
+    if (reply.content?.trim()) { summary = reply.content; emit({ type: "assistant", text: reply.content }); }
+    const calls = (reply.tool_calls ?? []).filter(call => call.type === "function");
+    if (!calls.length) break;
+    for (const call of calls) {
+      const tool = findTool(call.function.name);
+      let output: unknown;
+      try { output = tool ? await tool.run(agent, tool.input.parse(JSON.parse(call.function.arguments || "{}"))) : { error: `Unknown tool ${call.function.name}` }; }
+      catch (error) { output = { error: (error as Error).message }; }
+      messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(output) });
     }
-    if (turn.stop_reason === "refusal") throw new Error("The model declined this request.");
   }
   return summary;
 }
 
-/** The same policy, deterministic. */
-async function scriptedBrain(message: string, tools: AgentTools, config: AgentConfig, emit: (event: AgentEvent) => void) {
-  const say = (text: string) => emit({ type: "assistant", text });
-  const failed = (result: object): result is { error: string } => "error" in result;
-  if (/\b(repay|pay back|pay off)\b/i.test(message)) return scriptedRepay(tools, say);
-  const token = tokenFrom(message);
-  say(`Fetching a ${token} trading signal from CARSEM.`);
-  const balance = await tools.checkBalance();
-  if (failed(balance)) return `Could not read the wallet: ${balance.error}`;
+function intentOf(message: string): { category: "signal" | "flight" | "hotel" | "product"; query: string } {
+  const text = message.toLowerCase();
+  if (/\b(flight|fly|airline|plane)\b/.test(text)) {
+    const kl = /kuala lumpur|\bkl\b|\bkul\b/.test(text), sg = /singapore|\bsin\b|\bsg\b/.test(text);
+    return { category: "flight", query: kl && sg ? (text.indexOf("singapore") < text.search(/kuala lumpur|\bkl\b|\bkul\b/) ? "SIN-KUL" : "KUL-SIN") : sg ? "SIN" : "" };
+  }
+  if (/\b(hotel|stay|room|accommodation)\b/.test(text)) return { category: "hotel", query: /geylang/.test(text) ? "GEYLANG" : /marina/.test(text) ? "MARINA" : "SINGAPORE" };
+  if (/pokemon|pokémon/.test(text)) return { category: "product", query: "POKEMON" };
+  if (/necklace|gift|birthday|girlfriend|present/.test(text)) return { category: "product", query: "NECKLACE" };
+  const token = KNOWN_TOKENS.find(t => new RegExp(`\\b${t}\\b`).test(message.toUpperCase()));
+  return { category: "signal", query: token ?? "MIN" };
+}
 
-  let signal = await tools.getSignal({ token });
-  if (failed(signal)) return `Signal request failed: ${signal.error}`;
+async function scriptedRepay(agent: UserAgent, say: (t: string) => void) {
+  const loan = await agent.myLoan();
+  if (failed(loan)) return `Could not read your loan: ${loan.error}`;
+  if (!loan.open_loan) return "You have no open loan to repay.";
+  const repaid = await agent.repayLoan({ loan_id: loan.open_loan.loan_id });
+  if (failed(repaid)) return `Repayment failed: ${repaid.error}`;
+  if (repaid.status === "insufficient_funds") {
+    await agent.notifyUser({ message: `Loan ${repaid.loan_id} needs ${repaid.due_usdm} USDM and the agent holds ${repaid.balance_usdm}. Top up ${repaid.shortfall_usdm} USDM to ${repaid.agent_wallet} before ${clock(loan.open_loan.deadline)}.` });
+    return `Not repaid yet: ${repaid.shortfall_usdm} USDM is missing.`;
+  }
+  if (repaid.status !== "repaid") return `Repayment did not complete (${repaid.status}).`;
+  say(`Repaid ${repaid.paid_usdm} USDM.`);
+  return `Repaid loan ${repaid.loan_id} in full (tx ${short(repaid.payment_tx)}); your chats are unlocked.`;
+}
+
+async function scriptedBrain(message: string, agent: UserAgent, emit: (e: AgentEvent) => void) {
+  const say = (text: string) => emit({ type: "assistant", text });
+  const status = await agent.status();
+  if (failed(status)) return `CARSEM is not reachable: ${status.error}`;
+  if (!status.onboarded) return (status as { next: string }).next;
+  if (/\b(repay|pay back|pay off)\b/i.test(message)) return scriptedRepay(agent, say);
+
+  const { category, query } = intentOf(message);
+  say(`Searching CARSEM for ${category === "signal" ? `a ${query} trading signal` : `${category} prices${query ? ` (${query})` : ""}`}.`);
+  const found = await agent.searchData({ category, query });
+  if (failed(found) || !found.results.length) return `Nothing on CARSEM for that yet${failed(found) ? `: ${found.error}` : "."}`;
+  const best = found.results[0];
+
+  let bought = await agent.buyData({ listing_id: best.listing_id });
+  if (failed(bought)) return `Purchase failed: ${bought.error}`;
   let loanId: string | undefined;
-  if (signal.status === "insufficient_funds") {
-    say(`The signal costs ${signal.price_usdm} tUSDM and I hold ${signal.balance_usdm}. Borrowing ${signal.price_usdm} tUSDM from CARSEM Lending against your redacted data.`);
-    const loan = await tools.borrow({ amount_usdm: signal.price_usdm });
-    if (failed(loan)) {
-      await tools.notifyUser({ message: `I couldn't borrow to buy the ${token} signal: ${loan.error}` });
-      return `Stopped: borrowing failed (${loan.error}).`;
+  if (bought.status === "insufficient_funds") {
+    say(`"${best.title}" costs ${bought.price_usdm} USDM and the agent holds ${bought.balance_usdm}. Collateral borrowing ${bought.price_usdm} USDM against your redacted chats.`);
+    let loan = await agent.borrow({ amount_usdm: bought.price_usdm });
+    if (!failed(loan) && loan.status === "sync_required") {
+      say("Syncing what I know from this conversation first (redacted by CARSEM).");
+      await agent.syncContext({ items: [message] });
+      loan = await agent.borrow({ amount_usdm: bought.price_usdm });
+    }
+    if (failed(loan) || loan.status !== "borrowed") {
+      const reason = failed(loan) ? loan.error : loan.message;
+      await agent.notifyUser({ message: `I could not borrow: ${reason}. Sync more of your context (npm run sync) and ask again.` });
+      return `Stopped: borrowing failed (${reason}).`;
     }
     loanId = loan.loan_id;
-    say(`Borrowed ${loan.amount_usdm} tUSDM (fee ${loan.fee_usdm}, due ${loan.total_due_usdm} by ${clock(loan.deadline)}). Buying the signal.`);
-    signal = await tools.getSignal({ token });
-    if (failed(signal)) return `Signal request failed after borrowing: ${signal.error}`;
+    say(`Borrowed ${loan.amount_usdm} USDM (fee ${loan.fee_usdm}, due ${loan.total_due_usdm} by ${clock(loan.deadline)}); ${loan.collateral}. Buying now.`);
+    bought = await agent.buyData({ listing_id: best.listing_id });
+    if (failed(bought)) return `Purchase failed after borrowing: ${bought.error}`;
   }
-  if (signal.status !== "delivered") {
-    await tools.notifyUser({ message: `I couldn't buy the ${token} signal (${signal.status}).` });
-    return `Stopped: the signal was not delivered (${signal.status}).`;
-  }
-  say(`Signal: ${signal.signal.direction} ${signal.signal.pair} at ${Math.round(signal.signal.confidence * 100)}% confidence. Delivery hash ${signal.delivery_hash.slice(0, 16)}… is logged on chain. Trading it.`);
+  if (bought.status !== "delivered") return `The data was not delivered (${bought.status}).`;
+  const data = bought.listing as { title: string; data: Record<string, unknown> };
+  say(`Got it: ${data.title}. Proof of delivery ${short(bought.delivery_hash)} is logged on chain.`);
+  let summary = `Bought "${data.title}" (tx ${short(bought.payment_tx)}).`;
 
-  const trade = await tools.executeTrade({ delivery_id: signal.delivery_id });
-  if (failed(trade)) return `Bought the signal (tx ${shortHash(signal.payment_tx)}) but the trade failed: ${trade.error}`;
-  const tradeLine = `Trade ${trade.outcome}: ${trade.pnlUsdm >= 0 ? "+" : ""}${trade.pnlUsdm} tUSDM on ${trade.sizeAda} tADA (${trade.venue}).`;
-  if (!loanId) return `Bought the ${token} signal (tx ${shortHash(signal.payment_tx)}). ${tradeLine}`;
-
-  const loan = await tools.loanStatus({ loan_id: loanId });
-  const after = await tools.checkBalance();
-  if (failed(loan) || failed(after)) return `${tradeLine} Could not read the loan or balance; loan ${loanId} is still open.`;
-  if (toUnits(after.tUSDM) >= toUnits(loan.outstanding_usdm)) {
-    say(`${tradeLine} The wallet holds ${after.tUSDM} tUSDM, enough to repay ${loan.outstanding_usdm}. Repaying.`);
-    const repaid = await tools.repay({ loan_id: loanId });
-    if (failed(repaid) || repaid.status !== "repaid") return `${tradeLine} Repayment did not complete: ${failed(repaid) ? repaid.error : repaid.status}.`;
-    return `Bought the ${token} signal with borrowed tUSDM. ${tradeLine} Repaid loan ${loanId} in full (${loan.total_due_usdm} tUSDM, tx ${shortHash(repaid.payment_tx)}); your data collateral is released.`;
+  if (category === "signal") {
+    const trade = await agent.tradeSignal({ delivery_id: bought.delivery_id });
+    if (!failed(trade)) summary += ` Trade ${trade.outcome}: ${trade.pnlUsdm >= 0 ? "+" : ""}${trade.pnlUsdm} USDM (simulated Minswap fill).`;
   }
-  const topUp = (Number(loan.outstanding_usdm) - Number(after.tUSDM)).toFixed(2);
-  await tools.notifyUser({
-    message: `${tradeLine} I can't repay loan ${loanId} yet: ${loan.outstanding_usdm} tUSDM is due by ${clock(loan.deadline)} and I hold ${after.tUSDM}. Top me up with ${topUp} tUSDM, or your redacted chat bundle will be listed for sale on CARSEM.`,
+  if (!loanId) return summary;
+
+  const [loan, after] = [await agent.myLoan(), await agent.status()];
+  if (failed(loan) || failed(after) || !loan.open_loan || !after.onboarded) return `${summary} Loan ${loanId} status unknown.`;
+  const wallet = (after as { wallet: { USDM: string; address: string } }).wallet;
+  if (toUnits(wallet.USDM) >= toUnits(loan.open_loan.outstanding_usdm)) {
+    const repaid = await agent.repayLoan({ loan_id: loanId });
+    if (!failed(repaid) && repaid.status === "repaid") return `${summary} Repaid the ${loan.open_loan.total_due_usdm} USDM loan (tx ${short(repaid.payment_tx)}); your chats are unlocked.`;
+  }
+  const missing = (Number(loan.open_loan.outstanding_usdm) - Number(wallet.USDM)).toFixed(2);
+  await agent.notifyUser({
+    message: `Loan ${loanId}: ${loan.open_loan.outstanding_usdm} USDM is due by ${clock(loan.open_loan.deadline)} and I hold ${wallet.USDM}. Top up ${missing} USDM to ${wallet.address} and say "repay my loan", or your redacted chats will be published on CARSEM for any user to buy.`,
   });
-  return `${tradeLine} Loan ${loanId} is still open (${loan.outstanding_usdm} tUSDM due by ${clock(loan.deadline)}); I asked you to top up ${topUp} tUSDM.`;
+  return `${summary} Loan ${loanId} is still open; I asked you to top up ${missing} USDM.`;
 }
 
-/** "Repay my loan": find the open loan and repay it if the wallet covers it. */
-async function scriptedRepay(tools: AgentTools, say: (text: string) => void) {
-  const loans = await tools.myLoans();
-  if ("error" in loans) return `Could not list loans: ${loans.error}`;
-  const open = loans.find(l => l.status === "open");
-  if (!open) return "You have no open loan to repay.";
-  const balance = await tools.checkBalance();
-  if ("error" in balance) return `Could not read the wallet: ${balance.error}`;
-  if (toUnits(balance.tUSDM) < toUnits(open.outstanding_usdm)) {
-    const missing = (Number(open.outstanding_usdm) - Number(balance.tUSDM)).toFixed(2);
-    await tools.notifyUser({ message: `Loan ${open.loan_id} needs ${open.outstanding_usdm} tUSDM and I hold ${balance.tUSDM}. ${missing} tUSDM is still missing; it is due by ${clock(open.deadline)}.` });
-    return `Not repaid yet: ${missing} tUSDM still missing for loan ${open.loan_id}.`;
-  }
-  say(`Repaying loan ${open.loan_id}: ${open.outstanding_usdm} tUSDM from a balance of ${balance.tUSDM}.`);
-  const repaid = await tools.repay({ loan_id: open.loan_id });
-  if ("error" in repaid || repaid.status !== "repaid") return `Repayment did not complete: ${"error" in repaid ? repaid.error : repaid.status}.`;
-  return `Repaid loan ${open.loan_id} in full (${open.outstanding_usdm} tUSDM, tx ${shortHash(repaid.payment_tx)}); your data collateral is released.`;
-}
-
-export type Brain = "claude" | "scripted";
-
-export async function runAgent(message: string, options: { config: AgentConfig; wallet: AgentWallet; emit: (event: AgentEvent) => void; brain?: Brain; forceOutcome?: "win" | "loss" }) {
-  const { config, wallet, emit } = options;
-  const brain: Brain = options.brain ?? (config.anthropicConfigured ? "claude" : "scripted");
-  const tools = new AgentTools(config, wallet, emit, options.forceOutcome);
+export async function runAgent(message: string, options: { agent: UserAgent; config: GatewayConfig; emit: (event: AgentEvent) => void; brain?: Brain }) {
+  const { agent, config, emit } = options;
+  const brain: Brain = options.brain ?? (config.openai.apiKey ? "openai" : "scripted");
   emit({ type: "run_started", message, brain });
   try {
-    const summary = brain === "claude" ? await claudeBrain(message, tools, config, emit) : await scriptedBrain(message, tools, config, emit);
+    const summary = brain === "openai" ? await openaiBrain(message, agent, config, emit) : await scriptedBrain(message, agent, emit);
     emit({ type: "run_finished", summary });
-    return { brain, summary, notifications: tools.notifications };
+    return { brain, summary, notifications: agent.notifications };
   } catch (error) {
     emit({ type: "error", message: (error as Error).message });
     throw error;

@@ -1,39 +1,47 @@
 import { config as loadEnv } from "dotenv";
-import { chainModeFrom, rootEnvPath, toUnits, type ChainMode } from "@carsem/shared";
+import { chainModeFrom, fromRepoRoot, rootEnvPaths, sha256Hex, toUnits, type ChainMode } from "@carsem/shared";
 
-loadEnv({ path: rootEnvPath(), quiet: true });
+loadEnv({ path: rootEnvPaths(), quiet: true });
 
-export interface AgentConfig {
+export interface GatewayConfig {
   mode: ChainMode;
+  /** carsem-api, the platform. */
   apiUrl: string;
-  agentId: string;
-  agentKey: string;
+  port: number;
+  /** Where users' AI apps reach this gateway. */
+  publicUrl: string;
+  serviceToken: string;
+  /** Encrypts the hosted agent wallets at rest. */
+  walletKey: Buffer;
+  dbPath: string;
   maxPayment: bigint;
   tradeSizeAda: number;
-  port: number;
-  anthropicConfigured: boolean;
-  model: string;
-  sim: { agentSeed: string };
-  preprod: { mnemonic: string; blockfrost: { baseUrl: string; projectId: string } };
+  openai: { apiKey: string; model: string };
+  preprod: { blockfrost: { baseUrl: string; projectId: string } };
 }
 
 const str = (name: string, fallback = "") => process.env[name]?.trim() || fallback;
 
-export function loadAgentConfig(): AgentConfig {
+export function loadGatewayConfig(): GatewayConfig {
+  const mode = chainModeFrom(process.env.CHAIN_MODE);
+  const port = Number(str("GATEWAY_PORT", str("AGENT_PORT", "4031")));
+  const walletKeyHex = str("WALLET_KEY");
+  if (walletKeyHex && !/^[0-9a-fA-F]{64}$/.test(walletKeyHex)) throw new Error("WALLET_KEY must be 32 bytes of hex");
+  if (mode === "preprod" && !walletKeyHex) throw new Error("Set WALLET_KEY (32 bytes hex) before holding real preprod wallets.");
+  const serviceToken = str("SERVICE_TOKEN", "dev-service-token");
+  if (mode === "preprod" && serviceToken === "dev-service-token") throw new Error("Set SERVICE_TOKEN to a random secret on preprod.");
   return {
-    mode: chainModeFrom(process.env.CHAIN_MODE),
+    mode,
     apiUrl: str("CARSEM_API_URL", "http://localhost:4021").replace(/\/$/, ""),
-    agentId: str("CARSEM_AGENT_ID", "agent-demo"),
-    agentKey: str("CARSEM_AGENT_KEY", "dev-agent-key"),
+    port,
+    publicUrl: str("GATEWAY_PUBLIC_URL", `http://localhost:${port}`).replace(/\/$/, ""),
+    serviceToken,
+    walletKey: Buffer.from(walletKeyHex || sha256Hex("carsem-dev-wallet-key"), "hex"),
+    dbPath: fromRepoRoot(str("GATEWAY_DB_PATH", "./data/gateway.db")),
     maxPayment: toUnits(str("AGENT_MAX_PAYMENT_USDM", "60")),
     tradeSizeAda: Number(str("AGENT_TRADE_SIZE_ADA", "400")),
-    port: Number(str("AGENT_PORT", "4031")),
-    // The SDK also resolves ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile.
-    anthropicConfigured: !!(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim() || process.env.ANTHROPIC_PROFILE?.trim()),
-    model: str("AGENT_MODEL", "claude-opus-5"),
-    sim: { agentSeed: str("SIM_AGENT_SEED", "carsem-agent") },
+    openai: { apiKey: str("OPENAI_API_KEY"), model: str("OPENAI_MODEL") },
     preprod: {
-      mnemonic: str("AGENT_MNEMONIC"),
       blockfrost: { baseUrl: str("BLOCKFROST_BASE_URL", "https://cardano-preprod.blockfrost.io/api/v0").replace(/\/$/, ""), projectId: str("BLOCKFROST_PROJECT_ID") },
     },
   };

@@ -1,73 +1,73 @@
 import { useState } from "react";
-import { get, post, type Bid, type EnterpriseWallet, type Listing, type Sale } from "../api";
+import { get, post, type Listing, type Sale } from "../api";
 import { Badge, Empty, ErrorNote, Panel, TxLink } from "../components";
-import { usePoll } from "../hooks";
+import { usePoll, useSession } from "../hooks";
 
-interface Purchase {
-  enterprise: string; bundleId: string; price: number; payment: { tx: string; explorerUrl: string }; messages: string[];
-  loan?: { id: string; before: { status: string; outstanding: string }; after: { status: string; outstanding: string } };
-  steps: Array<{ step: string; detail: Record<string, unknown> }>;
-}
+interface Bid { id: string; enterprise: string; priceUsdm: number; dataAmount: number }
+interface Result { title: string; messages: string[]; tx?: string; txUrl?: string; loan?: { id: string; before: { status: string; outstanding: string }; after: { status: string; outstanding: string } } }
 
 export function MarketView() {
-  const listings = usePoll(() => get<Listing[]>("/api/market/bundles"), 3000);
+  const { key, profile } = useSession();
+  const listings = usePoll(() => get<Listing[]>("/api/market/bundles"), 3000, [key]);
   const bids = usePoll(() => get<Bid[]>("/api/market/bids"), 10000);
-  const wallets = usePoll(() => get<EnterpriseWallet[]>("/agent/enterprises"), 4000);
+  const wallets = usePoll(() => get<Array<{ enterprise: string; tUSDM: string }>>("/agent/enterprises"), 4000);
   const sales = usePoll(() => get<Sale[]>("/api/market/sales"), 4000);
-  const [buying, setBuying] = useState<string>();
-  const [purchase, setPurchase] = useState<Purchase>();
+  const [busy, setBusy] = useState<string>();
+  const [result, setResult] = useState<Result>();
   const [error, setError] = useState<string>();
+  const refresh = () => Promise.all([listings.refresh(), wallets.refresh(), sales.refresh()]);
 
-  async function buy(enterprise: string, bundleId: string) {
-    setBuying(`${enterprise}:${bundleId}`); setError(undefined);
-    try {
-      setPurchase(await post<Purchase>(`/agent/enterprises/${enterprise}/buy`, { bundleId }));
-      await Promise.all([listings.refresh(), wallets.refresh(), sales.refresh()]);
-    } catch (e) { setError((e as Error).message); }
-    finally { setBuying(undefined); }
+  async function act(id: string, action: () => Promise<Result>) {
+    setBusy(id); setError(undefined);
+    try { setResult(await action()); await refresh(); } catch (e) { setError((e as Error).message); } finally { setBusy(undefined); }
   }
+  const buyAsEnterprise = (enterprise: string, bundleId: string) => act(`${enterprise}:${bundleId}`, async () => {
+    const r = await post<{ messages: string[]; payment: { tx: string; explorerUrl: string }; loan?: Result["loan"] }>(`/agent/enterprises/${enterprise}/buy`, { bundleId });
+    return { title: `${enterprise} bought ${bundleId}`, messages: r.messages, tx: r.payment.tx, txUrl: r.payment.explorerUrl, loan: r.loan };
+  });
+  const accessWithMyAgent = (bundleId: string) => act(`me:${bundleId}`, async () => {
+    const r = await post<{ status?: string; error?: string; bundle?: { messages: string[] }; payment_tx?: string }>("/agent/v1/tools/access_published_data", { bundle_id: bundleId });
+    if (r.status !== "accessed") throw new Error(r.error ?? "Access failed");
+    return { title: `Your agent accessed ${bundleId}`, messages: r.bundle!.messages, tx: r.payment_tx };
+  });
+
+  const published = (listings.data ?? []).filter(l => l.status === "published");
+  const pledged = (listings.data ?? []).filter(l => l.status === "pledged");
 
   return (
     <div className="market-grid">
       <div className="market-main">
-        <Panel title="Redacted bundles for sale">
-          <p className="muted">A bundle appears here when its owner allows sales while a loan is open (proceeds repay the loan), or when a loan against it defaults. Buyers pay over x402 and receive redacted lines only.</p>
-          {listings.data?.length ? listings.data.map(l => (
-            <article key={l.id} className="listing">
-              <header>
-                <code>{l.id}</code>
-                <Badge tone={l.status === "listed" ? "bad" : "warn"}>{l.status === "listed" ? "defaulted" : "loan open"}</Badge>
-                {l.loan && <span className="muted small">loan {l.loan.id} · {l.loan.status} · {l.loan.outstanding} tUSDM outstanding</span>}
-              </header>
-              <ul className="after-list compact">{l.preview.map((line, i) => <li key={i}>{line}</li>)}</ul>
-              <div className="stat-chips">
-                <span className="chip static">{l.stats.messages} messages</span>
-                {Object.keys(l.stats.intents).map(k => <span key={k} className="chip static intent">{k}</span>)}
-              </div>
-              <div className="button-row">
-                {l.offers.map(o => (
-                  <button key={o.bidId} className="primary" disabled={!!buying} onClick={() => buy(o.enterprise, l.id)}>
-                    {buying === `${o.enterprise}:${l.id}` ? "Paying over x402…" : `Buy as ${o.enterprise} · ${o.price} tUSDM`}
-                  </button>
-                ))}
-                {l.soldTo.length > 0 && <span className="muted small">sold to {l.soldTo.join(", ")}</span>}
-              </div>
-            </article>
-          )) : <Empty>Nothing for sale. Bundles show up when a loan defaults, or while a loan is open if the owner allows it.</Empty>}
-          <ErrorNote error={error} />
+        <Panel title="Published chats (loan defaulted)">
+          <p className="muted">When an agent doesn't repay, its user's redacted chats are published here. Any verified CARSEM user can access them for a fee, and they keep selling.</p>
+          {published.length ? published.map(l => (
+            <BundleCard key={l.id} listing={l}>
+              {l.publicAccess && (l.publicAccess.isYours ? <span className="muted small">This is your data.</span>
+                : l.publicAccess.youOwnIt ? <span className="muted small">You have access.</span>
+                : profile?.onboarded ? <button className="primary" disabled={!!busy} onClick={() => accessWithMyAgent(l.id)}>{busy === `me:${l.id}` ? "Paying over x402…" : `Access with my agent · ${l.publicAccess.price} USDM`}</button>
+                : <a href="#start" className="small">Verify to access</a>)}
+              {l.enterpriseOffers.map(o => <button key={o.bidId} className="ghost" disabled={!!busy} onClick={() => buyAsEnterprise(o.enterprise, l.id)}>{busy === `${o.enterprise}:${l.id}` ? "Paying…" : `Buy as ${o.enterprise} · ${o.price}`}</button>)}
+              {l.publicAccess && <span className="muted small">{l.publicAccess.buyers} user(s) accessed</span>}
+            </BundleCard>
+          )) : <Empty>Nothing published. Chats appear here only after a loan defaults.</Empty>}
         </Panel>
 
-        {purchase && (
-          <Panel title={`${purchase.enterprise} bought ${purchase.bundleId}`} actions={<button className="link-button" onClick={() => setPurchase(undefined)}>close</button>}>
-            <div className="x402-chips">
-              {purchase.steps.map((s, i) => <span key={i} className={`chip-x402 ${s.step}`}>{s.step === "offer" ? `offer ${Number(s.detail.amount) / 1e6} tUSDM` : s.step === "request" ? `HTTP ${s.detail.status}` : s.step}</span>)}
-              <TxLink hash={purchase.payment.tx} url={purchase.payment.explorerUrl} />
-            </div>
-            {purchase.loan && (
-              <p>Loan <code>{purchase.loan.id}</code>: {purchase.loan.before.status}, {purchase.loan.before.outstanding} tUSDM outstanding → <strong>{purchase.loan.after.status}, {purchase.loan.after.outstanding} tUSDM</strong></p>
-            )}
-            <h3>Delivered ({purchase.messages.length} redacted lines)</h3>
-            <ul className="after-list compact">{purchase.messages.map((m, i) => <li key={i}>{m}</li>)}</ul>
+        <Panel title="Private enterprise sales (loan open)">
+          <p className="muted">While a loan is open, enterprises can buy the locked chats privately (if the owner allowed it). The proceeds repay the loan, and the rest goes to the owner.</p>
+          {pledged.length ? pledged.map(l => (
+            <BundleCard key={l.id} listing={l}>
+              {l.enterpriseOffers.map(o => <button key={o.bidId} className="primary" disabled={!!busy} onClick={() => buyAsEnterprise(o.enterprise, l.id)}>{busy === `${o.enterprise}:${l.id}` ? "Paying over x402…" : `Buy as ${o.enterprise} · ${o.price} USDM`}</button>)}
+              {l.soldTo.length > 0 && <span className="muted small">sold to {l.soldTo.join(", ")}</span>}
+            </BundleCard>
+          )) : <Empty>No open loans with private sales allowed.</Empty>}
+        </Panel>
+        <ErrorNote error={error} />
+
+        {result && (
+          <Panel title={result.title} actions={<button className="link-button" onClick={() => setResult(undefined)}>close</button>}>
+            {result.tx && <p>Paid over x402 <TxLink hash={result.tx} url={result.txUrl} /></p>}
+            {result.loan && <p>Loan <code>{result.loan.id}</code>: {result.loan.before.status}, {result.loan.before.outstanding} USDM outstanding → <strong>{result.loan.after.status}, {result.loan.after.outstanding} USDM</strong></p>}
+            <h3>Delivered ({result.messages.length} redacted lines)</h3>
+            <ul className="after-list compact">{result.messages.map((m, i) => <li key={i}>{m}</li>)}</ul>
           </Panel>
         )}
       </div>
@@ -77,9 +77,7 @@ export function MarketView() {
           <table>
             <thead><tr><th>Buyer</th><th>Bid</th><th>Wallet</th></tr></thead>
             <tbody>
-              {(bids.data ?? []).map(b => (
-                <tr key={b.id}><td>{b.enterprise}</td><td>{b.priceUsdm} tUSDM</td><td className="muted">{wallets.data?.find(w => w.enterprise === b.enterprise)?.tUSDM ?? "…"}</td></tr>
-              ))}
+              {(bids.data ?? []).map(b => <tr key={b.id}><td>{b.enterprise}</td><td>{b.priceUsdm} USDM</td><td className="muted">{wallets.data?.find(w => w.enterprise === b.enterprise)?.tUSDM ?? "…"}</td></tr>)}
             </tbody>
           </table>
         </Panel>
@@ -88,8 +86,8 @@ export function MarketView() {
             <ul className="feed compact">
               {sales.data.map(s => (
                 <li key={s.id}>
-                  <span>{s.enterprise}</span><span>{s.price} tUSDM</span>
-                  <span className="muted small">{s.loanId ? `${s.appliedToLoan} → loan · ${s.toUser} → owner` : `${s.toUser} → owner`}</span>
+                  <span>{s.enterprise ?? "user"}</span><span>{s.price} USDM</span>
+                  <span className="muted small">{[Number(s.appliedToLoan) > 0 && `${s.appliedToLoan} → loan`, Number(s.toUser) > 0 && `${s.toUser} → owner`, Number(s.toPlatform) > 0 && `${s.toPlatform} → platform`].filter(Boolean).join(" · ")}</span>
                   <TxLink hash={s.paymentTx} />
                 </li>
               ))}
@@ -98,5 +96,23 @@ export function MarketView() {
         </Panel>
       </div>
     </div>
+  );
+}
+
+function BundleCard({ listing: l, children }: { listing: Listing; children: React.ReactNode }) {
+  return (
+    <article className="listing">
+      <header>
+        <code>{l.id}</code>
+        <Badge tone={l.status === "published" ? "bad" : "warn"}>{l.status === "published" ? "published" : "loan open"}</Badge>
+        {l.loan && <span className="muted small">loan {l.loan.id} · {l.loan.status} · {l.loan.outstanding} USDM outstanding</span>}
+      </header>
+      <ul className="after-list compact">{l.preview.map((line, i) => <li key={i}>{line}</li>)}</ul>
+      <div className="stat-chips">
+        <span className="chip static">{l.stats.messages} items</span>
+        {Object.keys(l.stats.intents).map(k => <span key={k} className="chip static intent">{k}</span>)}
+      </div>
+      <div className="button-row">{children}</div>
+    </article>
   );
 }

@@ -2,12 +2,11 @@
  * The agent's wallet: an x402 ClientCardanoSigner plus balance reads.
  *   preprod    the official @x402/cardano reference signer (Evolution SDK, mnemonic, Blockfrost)
  *   simulated  an ed25519 wallet whose transfers carsem-api's ledger settles
- * Either way the agent signs its own payments; nobody else can move its funds.
+ * The gateway holds one per user (custody.ts) and signs that user's x402 payments.
  */
 import { toClientCardanoSigner, type ClientCardanoSigner } from "@x402/cardano";
 import { LOVELACE, NETWORK, SimWallet } from "@carsem/shared";
 import { api } from "./api.js";
-import type { AgentConfig } from "./config.js";
 
 export interface AgentWallet {
   address: string;
@@ -52,6 +51,3 @@ export function preprodWallet(mnemonic: string, blockfrost: { baseUrl: string; p
   };
 }
 
-export function agentWallet(config: AgentConfig): AgentWallet {
-  return config.mode === "preprod" ? preprodWallet(config.preprod.mnemonic, config.preprod.blockfrost) : simWallet(config.apiUrl, config.sim.agentSeed);
-}

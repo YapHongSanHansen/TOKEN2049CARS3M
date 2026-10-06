@@ -168,6 +168,15 @@ export function createSimulatedChain(config: Config, db: Db): SimulatedChain {
     async transfer(from, to, asset, amount, metadata) {
       return send(from, { to, asset, amount: amount.toString(), validUntil: Date.now() + 60_000, metadata: metadata && { 674: metadata } });
     },
+    async sendAssets(from, to, assets, metadata) {
+      // The simulated ledger moves one asset per transaction; return the last hash.
+      let last: ChainTx | undefined;
+      for (const [asset, amount] of Object.entries(assets)) {
+        if (amount > 0n) last = send(from, { to, asset, amount: amount.toString(), validUntil: Date.now() + 60_000, metadata: metadata && { 674: metadata } });
+      }
+      if (!last) throw new Error("Nothing to send");
+      return last;
+    },
     async logDecision(message) {
       return send("treasury", { validUntil: Date.now() + 60_000, metadata: { 674: { msg: message } } });
     },
