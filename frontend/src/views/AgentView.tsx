@@ -455,6 +455,7 @@ function Sidebar({ history, onChanged, onNewChat, name, wallet }: { history?: Me
 
 function SidePanel({ status, loan, onChanged, onClose }: { status?: AgentStatus; loan?: Loan; onChanged(): void; onClose(): void }) {
   const health = useHealth();
+  const { profile } = useSession();
   const wallet = status?.wallet;
   const missing = loan?.status === "open" && wallet ? Math.max(0, Number(loan.outstanding) - Number(wallet.USDM)) : 0;
   return (
@@ -466,6 +467,7 @@ function SidePanel({ status, loan, onChanged, onClose }: { status?: AgentStatus;
             <div className="balance"><span className="balance-value">{Number(wallet.USDM).toLocaleString(undefined, { maximumFractionDigits: 6 })}</span><span className="unit">USDM</span></div>
             <div className="muted small">{Number(wallet.tADA).toLocaleString(undefined, { maximumFractionDigits: 2 })} tADA for fees · one platform wallet</div>
             <div className="kv"><span>Address</span><code title={wallet.address}>{short(wallet.address, 12, 6)}</code></div>
+            {profile?.credit && <div className="kv"><span>Credit limit</span><span title={profile.credit.next.join(" · ")}>{profile.credit.limitUsdm} USDM · score {profile.credit.score}</span></div>}
           </>
         ) : <span className="muted">Loading…</span>}
       </div>

@@ -88,6 +88,7 @@ export class UserAgent {
         pastMessages: { count: history.messages.length, canBorrow: history.canBorrow, minimumToPledge: history.minimumToPledge },
         openLoan: open ? { loan_id: open.id, outstanding_usdm: open.outstanding, deadline: open.deadline, seconds_left: open.secondsLeft } : null,
         earnings_usdm: profile.earnings,
+        credit: profile.credit && { score: profile.credit.score, limit_usdm: profile.credit.limitUsdm, raise_it: profile.credit.next },
       };
     });
   }

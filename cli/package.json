@@ -1,0 +1,16 @@
+{
+  "name": "carsem",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CARSEM CLI: link your wallet, plug CARSEM into Codex / ChatGPT, ask your agent.",
+  "type": "module",
+  "bin": { "carsem": "./dist/carsem.cjs" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/carsem.cjs --banner:js=\"#!/usr/bin/env node\" --log-level=warning",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  }
+}

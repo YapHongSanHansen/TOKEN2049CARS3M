@@ -11,7 +11,8 @@
     "shared",
     "carsem-api",
     "agent",
-    "frontend"
+    "frontend",
+    "cli"
   ],
   "scripts": {
     "dev": "npm run dev -w carsem-api",
@@ -30,12 +31,15 @@
     "ask": "npm run ask -w agent --",
     "tool": "npm run tool -w agent --",
     "sync": "npm run sync -w agent --",
-    "demo:user": "npm run demo:user -w agent --"
+    "demo:user": "npm run demo:user -w agent --",
+    "build:cli": "npm run build -w cli",
+    "cli": "node cli/dist/carsem.cjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "concurrently": "^10.0.5",
     "tsx": "^4.20.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "esbuild": "^0.28.2"
   }
 }

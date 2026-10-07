@@ -21,6 +21,7 @@ import { Sync } from "./services/sync.js";
 import { Users } from "./services/users.js";
 import { WalletAuth } from "./services/wallet.js";
 import { createPaywall } from "./x402.js";
+import { Credit } from "./services/credit.js";
 
 /** Builds the API without listening, so tests and scripts can drive it. */
 export async function createApp(config: Config, options: { db?: Db } = {}) {
@@ -28,9 +29,11 @@ export async function createApp(config: Config, options: { db?: Db } = {}) {
   const chain = await createChain(config, db);
   const issuer = new Issuer(config);
   const users = new Users(db, config, issuer, chain, new GatewayClient(config));
+  const credit = new Credit(db, config);
+  users.credit = credit;
   const sync = new Sync(db, config, users);
   const data = new DataPlatform(db, config, chain);
-  const lending = new Lending(db, config, chain, users, sync);
+  const lending = new Lending(db, config, chain, users, sync, credit);
   const market = new Market(db, config, users, sync, lending);
   const dex = new DexSimulator(db, config, chain, data);
   const paywall = await createPaywall(config, chain, [
@@ -40,7 +43,7 @@ export async function createApp(config: Config, options: { db?: Db } = {}) {
     { route: "POST /market/bundles/:id/access", description: "Access to a published (defaulted) redacted chat bundle", price: () => config.publicAccessPrice },
   ]);
   const walletAuth = new WalletAuth(db, config.frontendUrl);
-  const ctx: Context = { config, db, chain, paywall, issuer, users, walletAuth, sync, data, lending, market, dex };
+  const ctx: Context = { config, db, chain, paywall, issuer, users, walletAuth, sync, data, lending, market, dex, credit };
 
   const app = express();
   // The payment gate and the routes must recognise exactly the same URLs.

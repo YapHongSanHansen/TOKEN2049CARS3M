@@ -4,10 +4,10 @@
 
 TOKEN2049 · Cardano agentic commerce (x402 + Masumi) · Cardano **preprod** · USDM + tADA
 
-Users talk to **their own AI app** (Hermes, Claude Code, ChatGPT, Claude, or plain `curl`). CARSEM plugs into it over MCP. Before anything works, the user **connects their own Cardano wallet (Lace, preprod testnet)**, verifies with a **Masumi-compatible DID** (KYC + consent), and gets **one agent with its own wallet**.
+Users talk to **their own AI** (Codex, ChatGPT, or plain `curl`). One line installs the `carsem` CLI, links the wallet and plugs CARSEM into Codex over MCP. Before anything works, the user **connects their own Cardano wallet (Lace, preprod testnet)**, verifies with a **Masumi-compatible DID** (KYC + consent), and gets **one agent with its own wallet**.
 
 ```
- User ─ chats in Hermes / Claude Code / ChatGPT / Claude / curl
+ User ─ chats in Codex / ChatGPT / curl   (curl -fsSL <carsem>/install.sh | sh && carsem link && carsem codex)
    │      "Find me trading signals on CARSEM, I want pocket money from Cardano DEX trades"
    ▼
  Onboarding gate (once)  connect Lace (CIP-30, sign a CIP-8 message, preprod only) → KYC (mock)
@@ -42,9 +42,8 @@ npm run demo        # carsem-api :4021 · agent gateway :4031 · web http://loca
 
 1. Install [Lace](https://www.lace.io) and switch it to **Preprod** (Settings → Network → Preprod). Open **http://localhost:5173 → Get started**, click **Connect Lace** and sign the one-time message (free, no transaction), then verify (mock KYC) and consent. You get your DID, credential, agent, agent wallet and **CARSEM key**. The same wallet always signs you back into the same account.
 2. **Connect your AI app** (the page shows copy-paste setup for each; details in [integrations/README.md](integrations/README.md)):
-   - Hermes: add the `carsem` MCP server to a `carsem` profile.
-   - Claude Code: `claude mcp add --transport http carsem http://localhost:4031/mcp --header "Authorization: Bearer csm_…"`
-   - ChatGPT / Claude web: custom connector `https://<public gateway>/mcp/k/csm_…` (needs ngrok).
+   - Codex / terminal, one line: `curl -fsSL http://localhost:4021/install.sh | sh && carsem link && carsem codex` (`npm run build:cli` first on a dev checkout). `carsem link` opens the web app, you sign in with Lace, and the key comes back to the CLI; `carsem codex` writes the MCP entry into `~/.codex/config.toml`.
+   - ChatGPT web / desktop: custom connector `https://<public gateway>/mcp/k/csm_…` (needs ngrok).
    - curl: `curl -N http://localhost:4031/v1/ask -H "Authorization: Bearer csm_…" -H "Content-Type: application/json" -d '{"message":"Find me trading signals on CARSEM"}'`
 3. Open **My agent**, a Claude-style chat. Your past messages are in the sidebar (import a ChatGPT/Claude export, or **Add sample chats** for the demo). Ask for trading signals, the cheapest KL→Singapore flight, a Geylang hotel or the Pokémon 30th Anniversary pack. When the agent can't afford the data it asks to borrow, and **you tick which past messages to pledge** right in the chat. Conversations from Hermes, Claude Code, ChatGPT and curl show up in the same chat.
 
@@ -72,9 +71,9 @@ Nothing is collected before the user consents, and everything is redacted on arr
 | Every prompt | what you ask your agent (any app) becomes one of your past messages |
 | The AI app itself | the `add_messages` tool: the AI adds what it knows about you from the chat and its memory |
 | Web chat | **Import ChatGPT / Claude export** (conversations.json) or **Add sample chats (demo)** in the sidebar |
-| Hermes | `npm run sync -- --source hermes --profile carsem --yes` (memories + your messages, redacted locally) |
-| Claude Code | `npm run sync -- --source claude-code --yes` |
-| ChatGPT / Claude | export your data, then `npm run sync -- --source chatgpt-export --path conversations.json --yes` |
+| ChatGPT | export your data, then import `conversations.json` in the My agent sidebar (or `npm run sync -- --source chatgpt-export --path conversations.json --yes`) |
+
+**Credit limit.** Each account gets a credit score (0–100) and a credit limit (1–50 USDM) a loan cannot exceed: account age (the wallet's first on-chain activity on preprod, else the CARSEM account; up to 30 points), size of the past-message history (up to 40), variety of sources and intents (up to 20), repayment record (−10 to +10). `GET /me/credit` shows the breakdown.
 
 ## Packages
 
@@ -84,7 +83,8 @@ Nothing is collected before the user consents, and everything is redacted on arr
 | `agent/` | The agent gateway: hosted wallets (one per user, encrypted), the CARSEM MCP server, curl API, OpenAI/scripted brain, `sync` / `ask` / `tool` / `demo:user` CLIs |
 | `frontend/` | Web (React + Tailwind + shadcn/ui + beui chat components): Get started (gate + connect), My agent (chat; the agent answers in OpenUI Lang, rendered with `@openuidev/react-lang`), CARSEM dashboard, Market (one daisy per seller) |
 | `shared/` | Units, redaction, encryption, simulated-chain transactions |
-| `integrations/` | How to connect Hermes, Claude Code, ChatGPT/Claude, curl; a `carsem` skill |
+| `cli/` | The `carsem` command (served by the API as `/install.sh`): `link` (wallet via the browser), `codex` (MCP entry in `~/.codex/config.toml`), `mcp` (stdio server for Codex), `status`, `ask` |
+| `integrations/` | How to connect Codex, ChatGPT and curl |
 | `facilitator/` | Runs the Java cardano-x402-facilitator (Docker) for preprod |
 | `tests/` | End-to-end tests with a real MCP client (`npm test`) |
 
@@ -115,7 +115,7 @@ Progress against [CARSEM_BUILD_PLAN.md](CARSEM_BUILD_PLAN.md):
 | 5 Agent wallet + x402 client | ✅ done | One encrypted wallet per user, held by the gateway, which signs x402 payments (Masumi's purchasing wallet). The user's own Lace wallet is their collection wallet. |
 | 6 CARSEM Lending | ✅ done (ledger) | Loan requests, user-picked collateral (≥ `MIN_PLEDGE_ITEMS`), 2% fee, deadline, repay, default checker. Collateral is locked by CARSEM's ledger. **Aiken loan validator not started.** |
 | 7 Redaction + consent | ✅ mostly | Revocable consent screen, redaction on arrival. `POST /redact/preview` exists, but there's no before/after view in the UI yet. |
-| 8 Agent brain | ✅ done | MCP server with 14 tools (Hermes, Claude Code, ChatGPT, Claude), curl `/v1/ask`, OpenAI brain or a scripted brain when there's no key. |
+| 8 Agent brain | ✅ done | MCP server with 14 tools (Codex via the `carsem` CLI, ChatGPT connector), curl `/v1/ask`, OpenAI brain or a scripted brain when there's no key. |
 | 9 DEX trade | ◐ simulated | Labelled simulated fill, with profit paid by the market-maker wallet. **Minswap SDK not wired.** |
 | 10 Enterprise market | ✅ done | eBay / Amazon / BNB / Meta bids. A private sale while a loan is open repays it; after a default the bundle is public for a fee. |
 | 11 Frontend | ✅ done | Get started · My agent (Claude-style chat, message picking) · CARSEM dashboard · Market, with explorer links on chain actions. |

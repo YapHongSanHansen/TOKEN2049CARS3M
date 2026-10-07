@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 import type { Db } from "./db.js";
 import type { DataPlatform } from "./services/data.js";
 import type { DexSimulator } from "./services/dex.js";
+import type { Credit } from "./services/credit.js";
 import type { Issuer } from "./services/identity.js";
 import type { Lending } from "./services/lending.js";
 import type { Market } from "./services/market.js";
@@ -25,6 +26,7 @@ export interface Context {
   lending: Lending;
   market: Market;
   dex: DexSimulator;
+  credit: Credit;
 }
 
 /** The caller, from `Authorization: Bearer csm_…`. */

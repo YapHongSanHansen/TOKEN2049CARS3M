@@ -78,6 +78,12 @@ export function onboardingRoutes(app: Express, ctx: Context) {
     users.requireOnboarded(user);
     res.json(sync.addSample(user));
   });
+  // Credit score and limit (refreshes the wallet's first on-chain activity on preprod).
+  app.get("/me/credit", wrap(async (req, res) => {
+    const user = userOf(ctx, req);
+    await ctx.credit.refreshWalletAge(user);
+    res.json(ctx.credit.view(user));
+  }));
   app.get("/me/earnings", (req, res) => { res.json({ earnings: fromUnits(userOf(ctx, req).earnings_units) }); });
 
   // Before/after redaction, nothing stored.

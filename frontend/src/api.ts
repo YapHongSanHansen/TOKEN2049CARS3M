@@ -5,7 +5,10 @@ export interface Health {
   prices: Record<string, string>; publicAccessPrice: string; kyc: string; issuer: string; gateway: string; l1Confirmations: number;
 }
 export interface TxRef { hash: string; explorerUrl: string }
+export interface CreditFactor { points: number; max: number; detail: string }
+export interface Credit { score: number; limitUsdm: string; factors: { accountAge: CreditFactor; history: CreditFactor; variety: CreditFactor; repayment: CreditFactor }; next: string[] }
 export interface Profile {
+  credit: Credit | null;
   id: string; name: string; onboarded: boolean;
   steps: { wallet: string; kyc: string; consent: string; agent: boolean };
   wallet: { name: string | null; id: string; payoutAddress: string | null; proof: string; verifiedAt: string; explorerUrl: string };
@@ -14,7 +17,7 @@ export interface Profile {
   agent: { id: string; name: string; did: string; address: string; masumi: { registered: boolean; agentIdentifier?: string; note?: string }; explorerUrl: string } | null;
   consent: { status: string; allowBorrowing?: boolean; allowSaleWhileOpen?: boolean; sources?: string[]; grantedAt?: string };
   earnings: string;
-  connect: { gateway: string; mcp: string; onboarding: string };
+  connect: { api: string; gateway: string; mcp: string; onboarding: string };
 }
 export interface LoanEvent { kind: string; amount: string | null; at: string; tx: TxRef | null }
 export interface Loan {

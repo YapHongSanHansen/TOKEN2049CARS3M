@@ -388,6 +388,40 @@ describe("default: published for every user, keeps selling", () => {
   });
 });
 
+describe("credit and the CLI", () => {
+  it("scores the account and caps loans at the credit limit", async () => {
+    const { apiUrl } = await startStack();
+    const fresh = await onboard(apiUrl, "Nia", { sync: CHATS.slice(0, 3) });
+    const credit = (await call(`${apiUrl}/me/credit`, { key: fresh.key })).body;
+    assert.ok(credit.score > 0 && credit.score < 40, `score ${credit.score}`);
+    assert.ok(Number(credit.limitUsdm) > 5 && Number(credit.limitUsdm) < 10, `limit ${credit.limitUsdm}`);
+    assert.equal((await call(`${apiUrl}/me`, { key: fresh.key })).body.credit.limitUsdm, credit.limitUsdm);
+    // The limit is checked when the loan is made (the agent may ask before the user adds history).
+    const ids = (await call(`${apiUrl}/me/messages`, { key: fresh.key })).body.messages.map((m: { id: number }) => m.id);
+    const big = await call(`${apiUrl}/loan-requests`, { key: fresh.key, body: { amount: "9.5", purpose: "too much" } });
+    assert.equal(big.status, 201);
+    const over = await call(`${apiUrl}/loans`, { key: fresh.key, body: { requestId: big.body.id, messageIds: ids } });
+    assert.equal(over.status, 400, JSON.stringify(over.body));
+    assert.match(over.body.error, /credit limit/);
+    const ok = await call(`${apiUrl}/loan-requests`, { key: fresh.key, body: { amount: "5", purpose: "ok" } });
+    assert.equal((await call(`${apiUrl}/loans`, { key: fresh.key, body: { requestId: ok.body.id, messageIds: ids } })).status, 201);
+    // More history raises the score.
+    await call(`${apiUrl}/me/sync`, { key: fresh.key, body: { source: "export", items: Array.from({ length: 120 }, (_, i) => `Looking for a laptop under RM ${3000 + i} for design work`) } });
+    const richer = (await call(`${apiUrl}/me/credit`, { key: fresh.key })).body;
+    assert.ok(richer.score > credit.score, `${richer.score} > ${credit.score}`);
+  });
+
+  it("serves the installer and the CLI bundle", async () => {
+    const { apiUrl } = await startStack();
+    const script = await fetch(`${apiUrl}/install.sh`);
+    assert.equal(script.status, 200);
+    const text = await script.text();
+    assert.ok(text.startsWith("#!/bin/sh") && text.includes("/cli/carsem.cjs") && text.includes("carsem link"));
+    const bundle = await fetch(`${apiUrl}/cli/carsem.cjs`);
+    assert.ok([200, 503].includes(bundle.status), `bundle ${bundle.status}`); // 503 only when the CLI isn't built
+  });
+});
+
 describe("x402 and Masumi", () => {
   it("charges once per payment and never reuses it for another listing", async () => {
     const { apiUrl, config } = await startStack();

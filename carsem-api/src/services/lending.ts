@@ -14,6 +14,7 @@ import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import { HttpError, newId } from "./errors.js";
 import type { Sync } from "./sync.js";
+import type { Credit } from "./credit.js";
 import type { UserRow, Users } from "./users.js";
 
 export interface LoanRow {
@@ -27,8 +28,14 @@ export interface LoanRequestRow { id: string; user_id: string; amount_units: str
 export class Lending {
   constructor(
     private readonly db: Db, private readonly config: Config, private readonly chain: Chain,
-    private readonly users: Users, private readonly sync: Sync,
+    private readonly users: Users, private readonly sync: Sync, private readonly credit?: Credit,
   ) {}
+
+  /** The most this user can borrow: their credit limit, never above LOAN_MAX_USDM. */
+  limitFor(user: UserRow): bigint {
+    const limit = this.credit?.limitUnits(user);
+    return limit !== undefined && limit < this.config.loanMax ? limit : this.config.loanMax;
+  }
 
   fee(amount: bigint) { return (amount * this.config.loanFeeBps + 9_999n) / 10_000n; }
 
@@ -106,7 +113,7 @@ export class Lending {
   /** The agent hits a paywall it can't afford and asks to borrow. A newer request replaces an older pending one. */
   createRequest(user: UserRow, amount: bigint, purpose: string) {
     this.users.requireOnboarded(user);
-    this.checkAmount(amount);
+    this.checkAmount(amount); // the credit limit is applied when the loan is made (the user may add history first)
     if (this.db.get("SELECT 1 FROM loans WHERE user_id = ? AND status IN ('disbursing','open')", user.id)) {
       throw new HttpError(409, "There is already an open loan against your messages. Repay it first.", "loan_open");
     }
@@ -131,9 +138,14 @@ export class Lending {
     return this.requestView(this.request(id));
   }
 
-  private checkAmount(amount: bigint) {
+  private checkAmount(amount: bigint, user?: UserRow) {
     if (amount <= 0n) throw new HttpError(400, "amount must be positive");
-    if (amount > this.config.loanMax) throw new HttpError(400, `amount exceeds the ${fromUnits(this.config.loanMax)} USDM limit`);
+    const limit = user ? this.limitFor(user) : this.config.loanMax;
+    if (amount > limit) {
+      throw new HttpError(400, user && limit < this.config.loanMax
+        ? `amount exceeds your credit limit of ${fromUnits(limit)} USDM (score ${this.credit!.view(user).score}/100: add past messages and repay on time to raise it)`
+        : `amount exceeds the ${fromUnits(this.config.loanMax)} USDM limit`, "credit_limit");
+    }
   }
 
   /**
@@ -148,7 +160,7 @@ export class Lending {
     if (request && request.status !== "pending") throw new HttpError(409, `That request is ${request.status}`);
     const amount = request ? BigInt(request.amount_units) : input.amount;
     if (amount === undefined) throw new HttpError(400, "amount is required");
-    this.checkAmount(amount);
+    this.checkAmount(amount, user);
     const fee = this.fee(amount);
     const loanId = newId("loan");
 

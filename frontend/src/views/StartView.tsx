@@ -7,14 +7,31 @@ import { SignUpForm, type SignUpValues } from "@/components/motion/signup-form";
 
 const STEPS = ["Connect wallet", "Verify (KYC)", "Consent", "Masumi identity", "Connect your AI"] as const;
 
+/** `carsem link` opened this page with ?cli=<port>&nonce=…: once verified, the key goes back to the CLI on localhost. */
+function useCliHandoff(key: string, onboarded: boolean) {
+  const [state, setState] = useState<"idle" | "sent" | "failed">("idle");
+  const params = new URLSearchParams(window.location.search);
+  const port = params.get("cli");
+  const nonce = params.get("nonce");
+  useEffect(() => {
+    if (!port || !nonce || !key || !onboarded || state !== "idle") return;
+    fetch(`http://127.0.0.1:${port}/key/${nonce}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) })
+      .then(r => setState(r.ok ? "sent" : "failed")).catch(() => setState("failed"));
+  }, [port, nonce, key, onboarded, state]);
+  return port ? state : null;
+}
+
 export function StartView() {
   const { key, profile, setKey, refresh } = useSession();
   const step = !key || !profile ? 0 : profile.steps.kyc !== "verified" ? 1 : profile.consent.status !== "active" ? 2 : !profile.onboarded ? 3 : 4;
+  const handoff = useCliHandoff(key, !!profile?.onboarded);
   return (
     <div className="start">
+      {handoff === "sent" && <div className="offline-note" style={{ marginBottom: 16 }}>✔ Linked. Your key was sent to the <code>carsem</code> CLI. You can go back to the terminal.</div>}
+      {handoff === "failed" && <div className="offline-note" style={{ marginBottom: 16 }}>Couldn't reach the CLI on this machine. Run <code>carsem link</code> again, or copy the key from step 5.</div>}
       <header className="start-head">
         <h1>Verify once, then use CARSEM from any AI app</h1>
-        <p className="muted">ChatGPT, Claude, Claude Code, Hermes or curl. Every app goes through the same gate: your Cardano wallet, a Masumi-compatible DID with a KYC credential, and your consent. Then your agent gets its own wallet to pay for data.</p>
+        <p className="muted">Codex, ChatGPT or curl. Everything goes through the same gate: your Cardano wallet, a Masumi-compatible DID with a KYC credential, and your consent. Then your agent gets its own wallet to pay for data.</p>
         <ol className="stepper">
           {STEPS.map((label, i) => <li key={label} className={i < step ? "done" : i === step ? "current" : ""}><span>{i < step ? "✓" : i + 1}</span>{label}</li>)}
         </ol>
@@ -181,10 +198,11 @@ function IdentityStep({ onDone }: { onDone(): Promise<void> }) {
 
 function ConnectStep({ profile, keyValue }: { profile: Profile; keyValue: string }) {
   const health = useHealth();
-  const [tab, setTab] = useState<"hermes" | "claude-code" | "chatgpt" | "curl">("hermes");
+  const [tab, setTab] = useState<"cli" | "chatgpt">("cli");
   const [balance, setBalance] = useState<string>();
   useEffect(() => { get<{ wallet?: { USDM: string } }>("/agent/v1/me").then(s => setBalance(s.wallet?.USDM)).catch(() => {}); }, []);
   const gateway = profile.connect.gateway;
+  const api = profile.connect.api;
   const credential = profile.identity && decodeJwt(profile.identity.credential.jwt);
   const isLocal = /localhost|127\.0\.0\.1/.test(gateway);
   return (
@@ -198,43 +216,32 @@ function ConnectStep({ profile, keyValue }: { profile: Profile; keyValue: string
         <div className="kv"><span>Masumi registry</span><span>{profile.agent?.masumi.registered ? short(profile.agent.masumi.agentIdentifier ?? "", 10, 6) : "on preprod (pending)"}</span></div>
         <div className="kv"><span>Agent wallet</span><code title={profile.agent?.address}>{short(profile.agent?.address ?? "", 14, 6)}</code></div>
         <div className="kv"><span>Balance</span><strong>{balance ?? "…"} USDM</strong></div>
+        {profile.credit && (
+          <div className="kv" title={Object.values(profile.credit.factors).map(f => `${f.points}/${f.max} · ${f.detail}`).join("\n")}>
+            <span>Credit</span><strong>score {profile.credit.score}/100 · limit {profile.credit.limitUsdm} USDM</strong>
+          </div>
+        )}
         <p className="muted small">One wallet, one identity, one agent. Your agent's wallet starts with 0.05 USDM, so a 5 USDM paywall will need collateral borrowing.</p>
         <CopyBlock label="Your CARSEM key (keep it secret)" code={keyValue} />
       </Panel>
 
       <Panel title="Connect your AI app">
         <div className="seg">
-          {([["hermes", "Hermes"], ["claude-code", "Claude Code"], ["chatgpt", "ChatGPT / Claude web & desktop"], ["curl", "curl"]] as const).map(([id, label]) =>
+          {([["cli", "Codex / terminal"], ["chatgpt", "ChatGPT"]] as const).map(([id, label]) =>
             <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>)}
         </div>
-        {tab === "hermes" && (
+        {tab === "cli" && (
           <>
-            <p className="muted small">Use a separate Hermes profile named <code>carsem</code>, then add CARSEM to its <code>config.yaml</code>:</p>
-            <CopyBlock code={`mcp_servers:\n  carsem:\n    url: ${gateway}/mcp\n    headers:\n      Authorization: "Bearer ${keyValue}"`} />
-            <p className="muted small">Add what Hermes remembers about you to your past messages (redacted on your machine first):</p>
-            <CopyBlock code={`npm run sync -- --source hermes --profile carsem --yes`} />
-          </>
-        )}
-        {tab === "claude-code" && (
-          <>
-            <CopyBlock code={`claude mcp add --transport http carsem ${gateway}/mcp --header "Authorization: Bearer ${keyValue}"`} />
-            <p className="muted small">Then run <code>claude</code> and ask: "Find me trading signals on CARSEM, I want pocket money from Cardano DEX trades." To sync your Claude Code history (redacted locally):</p>
-            <CopyBlock code={`npm run sync -- --source claude-code --yes`} />
+            <p className="muted small">One line installs the <code>carsem</code> CLI (Node.js 20+). It links this wallet and plugs CARSEM into Codex, so ChatGPT's agent can use it:</p>
+            <CopyBlock code={`curl -fsSL ${api}/install.sh | sh && carsem link && carsem codex`} />
+            <p className="muted small"><code>carsem link</code> opens this page; signing in with Lace sends the key to the CLI. <code>carsem codex</code> adds CARSEM to <code>~/.codex/config.toml</code>. Also: <code>carsem status</code>, <code>carsem ask "…"</code>.</p>
           </>
         )}
         {tab === "chatgpt" && (
           <>
-            <p className="muted small">Add a custom connector (ChatGPT: Settings → Connectors; Claude: Settings → Connectors) with your personal URL:</p>
+            <p className="muted small">ChatGPT (web / desktop): Settings → Connectors → add a custom connector with your personal URL:</p>
             <CopyBlock code={`${gateway}/mcp/k/${keyValue}`} />
-            {isLocal && <p className="warn-note">This URL is on localhost. ChatGPT and Claude web need the public URL (ngrok), coming in the preprod phase.</p>}
-            <p className="muted small">Bring your full history by exporting it from ChatGPT or Claude, then:</p>
-            <CopyBlock code={`npm run sync -- --source chatgpt-export --path conversations.json --yes`} />
-          </>
-        )}
-        {tab === "curl" && (
-          <>
-            <CopyBlock code={`curl -N ${gateway}/v1/ask \\\n  -H "Authorization: Bearer ${keyValue}" -H "Content-Type: application/json" \\\n  -d '{"message":"Find me trading signals on CARSEM, I want pocket money from Cardano DEX trades"}'`} />
-            <CopyBlock label="Or one tool at a time" code={`curl ${gateway}/v1/tools/search_data -H "Authorization: Bearer ${keyValue}" -H "Content-Type: application/json" -d '{"category":"flight","query":"KUL-SIN"}'`} />
+            {isLocal && <p className="warn-note">This URL is on localhost. ChatGPT needs the public URL (ngrok), coming in the preprod phase.</p>}
           </>
         )}
         <p className="muted small">Then watch your agent work on the <a href="#agent">My agent</a> tab. Network: {health?.mode === "preprod" ? "Cardano preprod" : "simulated chain"}.</p>

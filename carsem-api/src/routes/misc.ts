@@ -1,12 +1,44 @@
 import type { Express } from "express";
-import { LOVELACE, NETWORK, fromUnits, toUnits } from "@carsem/shared";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { LOVELACE, NETWORK, fromUnits, repoRoot, toUnits } from "@carsem/shared";
 import type { SimulatedChain } from "../chain/simulated.js";
 import { userOf, type Context } from "../context.js";
 import { HttpError } from "../services/errors.js";
 import { wrap } from "./wrap.js";
 
+/** The `carsem` CLI, served by the platform itself: `curl -fsSL <api>/install.sh | sh`. */
+function installScript(config: Context["config"]) {
+  const q = (v: string) => JSON.stringify(v);
+  return [
+    "#!/bin/sh",
+    "# CARSEM CLI installer. Puts the carsem command in ~/.carsem/bin (Node.js 20+ is required).",
+    "set -e",
+    `API="${config.publicUrl}"`,
+    'DIR="$HOME/.carsem/bin"',
+    'command -v node >/dev/null 2>&1 || { echo "carsem needs Node.js 20 or newer: https://nodejs.org" >&2; exit 1; }',
+    'mkdir -p "$DIR"',
+    'curl -fsSL "$API/cli/carsem.cjs" -o "$DIR/carsem.cjs"',
+    `printf '#!/bin/sh\nexec node "%s/carsem.cjs" "$@"\n' "$DIR" > "$DIR/carsem"`,
+    `printf '@echo off\r\nnode "%%~dp0carsem.cjs" %%*\r\n' > "$DIR/carsem.cmd"`,
+    'chmod +x "$DIR/carsem" "$DIR/carsem.cjs"',
+    `printf '%s\n' ${q(JSON.stringify({ api: config.publicUrl, gateway: config.gatewayPublicUrl, web: config.frontendUrl }))} > "$HOME/.carsem/config.json"`,
+    'case ":$PATH:" in *":$DIR:"*) ;; *) echo "Add it to your PATH:  export PATH=\\"$DIR:\\$PATH\\"";; esac',
+    'echo "Installed: $DIR/carsem"',
+    'echo "Next:      carsem link      (connect your wallet)"',
+    'echo "           carsem codex     (plug CARSEM into Codex)"',
+    "",
+  ].join("\n");
+}
+
 export function miscRoutes(app: Express, ctx: Context) {
   const { config, chain, db, dex } = ctx;
+  app.get("/install.sh", (_req, res) => { res.type("text/x-shellscript").send(installScript(config)); });
+  app.get("/cli/carsem.cjs", (_req, res) => {
+    const bundle = join(repoRoot(), "cli", "dist", "carsem.cjs");
+    if (!existsSync(bundle)) throw new HttpError(503, "The CLI is not built on this server: run npm run build:cli");
+    res.type("application/javascript").send(readFileSync(bundle, "utf8"));
+  });
 
   app.get("/health", (_req, res) => {
     res.json({

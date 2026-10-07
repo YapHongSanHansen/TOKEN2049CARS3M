@@ -18,6 +18,7 @@ import type { GatewayClient } from "./gateway.js";
 import type { Issuer } from "./identity.js";
 import { mockKyc, type KycOutcome } from "./kyc.js";
 import { parseWalletAddress, type ProvenWallet } from "./wallet.js";
+import type { Credit } from "./credit.js";
 
 export interface UserRow {
   id: string; name: string; did: string | null;
@@ -33,6 +34,9 @@ export const SYNC_SOURCES = ["assistant", "export", "hermes", "claude_code", "to
 const keyHash = (key: string) => createHash("sha256").update(`carsem-user-key:${key}`).digest("hex");
 
 export class Users {
+  /** Set by app.ts once the credit service exists (it reads loans and messages, which this class creates). */
+  credit?: Credit;
+
   constructor(
     private readonly db: Db, private readonly config: Config, private readonly issuer: Issuer,
     private readonly chain: Chain, private readonly gateway: GatewayClient,
@@ -214,7 +218,8 @@ export class Users {
       },
       consent: this.consentView(user.id),
       earnings: fromUnits(user.earnings_units),
-      connect: { gateway: this.config.gatewayPublicUrl, mcp: `${this.config.gatewayPublicUrl}/mcp`, onboarding: this.onboardingUrl },
+      credit: this.credit?.view(user) ?? null,
+      connect: { api: this.config.publicUrl, gateway: this.config.gatewayPublicUrl, mcp: `${this.config.gatewayPublicUrl}/mcp`, onboarding: this.onboardingUrl },
     };
   }
 }
