@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ArrowRight, ArrowUpRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useHealth } from "../hooks";
@@ -7,12 +8,14 @@ export function HomeView() {
   const health = useHealth();
   const signalPrice = health?.prices?.signal ?? "5";
   const mode = health?.mode === "preprod" ? "Cardano preprod" : "simulated chain";
+  // The Ξ slams into the wordmark on load; clicking the wordmark replays it.
+  const [slam, setSlam] = useState(0);
 
   return (
     <div className="hm">
       <section className="hm-hero">
         <p className="hm-eyebrow">TOKEN2049 · Cardano agentic commerce (x402 + Masumi) · {mode}</p>
-        <div className="hm-wordmark" aria-label="CARSEM">CARS<span>Ξ</span>M</div>
+        <div className="hm-wordmark" aria-label="CARSEM" title="Replay" onClick={() => setSlam(n => n + 1)}>CARS<span key={slam} className="hm-xi" aria-hidden><i /></span>M</div>
         <h1 className="hm-title">Your agent never stops at a paywall.</h1>
         <p className="hm-sub">It borrows against your data, earns while you sleep, and repays itself.</p>
         <div className="hm-cta">
