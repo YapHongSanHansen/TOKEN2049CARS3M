@@ -45,7 +45,7 @@ html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.
 body { background: transparent; }
 .app-bg { position: fixed; inset: 0; z-index: -1; }
 .app-bg-shader { position: absolute; inset: 0; }
-a:not(.beui *) { color: var(--accent); text-decoration: none; }
+a:not(.beui *):not([data-slot="button"]) { color: var(--accent); text-decoration: none; }
 a:hover:not(.beui *) { text-decoration: underline; }
 code:not(.beui *), pre:not(.beui *), .tx:not(.beui *) { font-family: var(--mono); font-size: 12.5px; }
 h1, h2, h3 { margin: 0; }
@@ -498,3 +498,74 @@ button.mk-refresh { height: 32px; width: 32px; border: 0; background: none; }
 /* beui's sign-up form has fixed fields; CARSEM only needs a name and the terms (the wallet is the login). */
 .ws-fields > *:has(input[type="email"]), .ws-fields > *:has(input[type="password"]), .ws-fields > *:has(input[autocomplete="new-password"]) { display: none; }
 @media (max-width: 1179px) { .chat-layout .c-panel { position: fixed; right: 0; top: 52px; bottom: 0; z-index: 30; box-shadow: -12px 0 30px rgba(0, 0, 0, .35); } }
+
+/* ---- home: editorial front page (condensed display type, mono eyebrows, numbered sections) ---- */
+.hm { --hm-display: "Barlow Condensed", Impact, "Arial Narrow", sans-serif; --hm-mono: "Space Mono", var(--mono); max-width: 1180px; margin: 0 auto; padding: 24px 0 40px; }
+.hm-eyebrow { font: 11px/1.4 var(--hm-mono); letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin: 0 0 18px; }
+.hm-hero { padding: 24px 0 36px; border-bottom: 1px solid var(--border-strong); }
+.hm-wordmark { font: 900 clamp(84px, 14vw, 200px)/.9 var(--hm-display); letter-spacing: -4px; text-transform: uppercase; color: var(--text); }
+.hm-wordmark span { color: var(--muted); }
+.hm-title { font: 800 clamp(34px, 5vw, 64px)/1.02 var(--hm-display); letter-spacing: -1px; text-transform: uppercase; margin: 18px 0 10px; max-width: 14ch; }
+.hm-sub { font-family: var(--serif); font-size: clamp(18px, 2vw, 24px); line-height: 1.4; color: var(--muted); max-width: 32ch; margin: 0 0 26px; }
+.hm-cta { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 26px; }
+.hm-cta a { text-decoration: none; }
+.hm-badges { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0; padding: 0; font: 11px/1.6 var(--hm-mono); }
+.hm-badges li { display: flex; gap: 8px; align-items: baseline; color: var(--text); }
+.hm-badges li span { color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+.hm-badges li span::after { content: ":"; }
+.hm-metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border-strong); border-top: 0; }
+.hm-metric { position: relative; padding: 18px 22px 20px; display: flex; flex-direction: column; gap: 2px; }
+.hm-metric + .hm-metric { border-left: 1px solid var(--border); }
+.hm-metric > span { font: 600 12px/1.4 var(--sans); color: var(--muted); }
+.hm-metric > div { display: flex; gap: 10px; align-items: baseline; margin-top: 4px; }
+.hm-metric strong { font: 700 40px/1.05 var(--hm-display); letter-spacing: -.5px; }
+.hm-metric em { font: 600 13px/1 var(--hm-display); text-transform: uppercase; letter-spacing: .6px; color: var(--muted); font-style: normal; }
+.hm-metric small { font: 10px/1.6 var(--hm-mono); color: var(--faint); margin-top: 6px; }
+.hm-metric::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255, 255, 255, .06); }
+.hm-section { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; padding: 44px 0; border-bottom: 1px solid var(--border); }
+.hm-section header { display: flex; flex-direction: column; gap: 6px; }
+.hm-num { font: 11px/1 var(--hm-mono); color: var(--muted); letter-spacing: 1px; }
+.hm-section h2 { font: 800 clamp(28px, 3.4vw, 40px)/1 var(--hm-display); text-transform: uppercase; letter-spacing: -.5px; color: var(--text); }
+.hm-body { max-width: 72ch; font-size: 16px; line-height: 1.6; }
+.hm-body > p { margin: 0 0 14px; }
+.hm-lead { font-family: var(--serif); font-size: 21px; line-height: 1.4; }
+.hm-muted { color: var(--muted); font-size: 14.5px; }
+.hm-callout { margin-top: 18px; padding: 14px 18px; border-left: 2px solid var(--text); background: var(--panel); font-size: 15px; }
+.hm-figure { margin: 0 0 18px; padding: 10px; background: #f5f3ec; border: 1px solid var(--border-strong); border-radius: 10px; }
+.hm-figure img { display: block; width: 100%; height: auto; }
+.hm-table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.hm-table th { width: 34%; text-align: left; vertical-align: top; font: 600 12.5px/1.5 var(--sans); color: var(--muted); padding: 10px 12px 10px 0; border-bottom: 1px solid var(--border); }
+.hm-table td { vertical-align: top; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.hm-table tr:last-child :is(th, td) { border-bottom: 0; }
+.hm-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.hm-step { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.hm-step:last-child { border-bottom: 0; }
+.hm-step-n { font: 11px/1.9 var(--hm-mono); color: var(--muted); }
+.hm-step-who { display: block; font: 700 12px/1.6 var(--hm-display); text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.hm-step p { margin: 2px 0 0; }
+.hm-step.good .hm-step-who { color: var(--good); }
+.hm-step.bad .hm-step-who { color: var(--bad); }
+.hm-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.hm-final { padding: 56px 0 40px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.hm-final h2 { font: 800 clamp(30px, 4.6vw, 56px)/1 var(--hm-display); text-transform: uppercase; letter-spacing: -1px; color: var(--text); max-width: 18ch; }
+.hm-final p { color: var(--muted); margin: 0 0 10px; }
+.hm-final a { text-decoration: none; }
+.hm-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 20px; padding-top: 18px; border-top: 1px solid var(--border-strong); font: 11px/1.7 var(--hm-mono); color: var(--muted); }
+.hm-foot nav { display: flex; flex-wrap: wrap; gap: 16px; }
+.hm-foot a { display: inline-flex; align-items: center; gap: 3px; color: var(--text); }
+@media (max-width: 900px) { .hm-metrics { grid-template-columns: repeat(2, 1fr); } .hm-metric:nth-child(3) { border-left: 0; } .hm-metric:nth-child(n + 3) { border-top: 1px solid var(--border); } .hm-section { grid-template-columns: 1fr; gap: 12px; padding: 32px 0; } }
+@media (max-width: 560px) { .hm-metrics { grid-template-columns: 1fr; } .hm-metric + .hm-metric { border-left: 0; border-top: 1px solid var(--border); } .hm-wordmark { letter-spacing: -2px; } .hm-table th { width: 40%; } }
+
+/* ---- nav bar: transparent, editorial type ------------------------------------------------ */
+.topbar { background: linear-gradient(180deg, rgba(16, 16, 18, .9) 0%, rgba(16, 16, 18, .55) 70%, rgba(16, 16, 18, 0) 100%); border-bottom: 0; backdrop-filter: none; -webkit-backdrop-filter: none; height: 60px; }
+.wordmark { font: 800 22px/1 "Barlow Condensed", Impact, "Arial Narrow", sans-serif; letter-spacing: .5px; text-transform: uppercase; }
+.logo { width: 20px; height: 20px; border-radius: 5px; font-size: 9px; }
+.tabs a { font: 500 12px/1 "Space Mono", var(--mono); letter-spacing: 1.2px; text-transform: uppercase; padding: 20px 0; color: var(--muted); }
+.tabs a:hover, .tabs a.active { color: var(--text); }
+.tabs a.active::after { bottom: 12px; height: 1px; }
+.chat-layout { height: calc(100svh - 60px); }
+.chat-shell { height: calc(100svh - 60px) !important; }
+@media (max-width: 1179px) { .chat-layout .c-panel { top: 60px; } }
+@media (max-width: 820px) { .topbar { height: 52px; } .tabs a { padding: 16px 0; font-size: 11px; letter-spacing: .8px; } .tabs a.active::after { bottom: 9px; } .chat-layout, .chat-shell { height: calc(100svh - 52px) !important; } .chat-layout .c-panel { top: 52px; } }
+/* The Ξ in the wordmark: Barlow Condensed has no Greek, so it takes a face that does. */
+.hm-wordmark span { font-family: Inter, system-ui, sans-serif; font-weight: 800; font-size: .86em; vertical-align: .02em; letter-spacing: -2px; }

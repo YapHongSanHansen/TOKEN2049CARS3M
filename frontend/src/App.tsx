@@ -5,10 +5,12 @@ import { HealthContext, SessionContext, usePoll } from "./hooks";
 import { AgentView } from "./views/AgentView";
 import { DashboardView } from "./views/DashboardView";
 import { FlowerPreview } from "./views/FlowerPreview";
+import { HomeView } from "./views/HomeView";
 import { MarketView } from "./views/MarketView";
 import { StartView } from "./views/StartView";
 
 const TABS = [
+  { id: "home", label: "Home", view: HomeView },
   { id: "start", label: "Get started", view: StartView },
   { id: "agent", label: "My agent", view: AgentView },
   { id: "carsem", label: "CARSEM", view: DashboardView },
@@ -47,14 +49,13 @@ export function App() {
   useEffect(() => { void refresh(); }, [refresh]);
   const setKey = (next: string) => { saveKey(next); setKeyState(next); };
 
-  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? "start");
+  // The home page comes first; every other page is reached by its hash.
+  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? "home");
   useEffect(() => {
-    const onHash = () => setTab(tabFromHash() ?? "start");
+    const onHash = () => setTab(tabFromHash() ?? "home");
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
-  // Verified users land on their agent by default.
-  useEffect(() => { if (!window.location.hash && profile?.onboarded) setTab("agent"); }, [profile?.onboarded]);
   const View = TABS.find(t => t.id === tab)!.view;
 
   return (

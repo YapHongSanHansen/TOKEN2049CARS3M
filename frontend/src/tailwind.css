@@ -87,3 +87,8 @@
   .beui :disabled { cursor: default; }
   .beui code, .beui pre { font-size: inherit; }
 }
+
+/* A link rendered as a shadcn <Button asChild> takes the button's colours, not the page's link colour. */
+@layer base {
+  a[data-slot="button"] { color: inherit; text-decoration: none; }
+}
